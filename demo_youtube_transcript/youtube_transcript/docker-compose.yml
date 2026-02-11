@@ -1,0 +1,6 @@
+services:
+  youtube-transcript-api:
+    image: youtube-transcript-api:local
+    build:
+      context: .
+      dockerfile: Dockerfile

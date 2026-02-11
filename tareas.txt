@@ -1,0 +1,1 @@
+Cuando esté resumido, debe hacer un Text To Spech para leer el resumen.
