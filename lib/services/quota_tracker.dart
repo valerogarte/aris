@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../storage/app_database.dart';
 
 const int kDefaultYouTubeDailyQuota =
     int.fromEnvironment('YOUTUBE_DAILY_QUOTA', defaultValue: 10000);
@@ -28,8 +28,7 @@ class QuotaTracker extends ChangeNotifier {
 
   Future<void> load() async {
     if (_loaded) return;
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_storageKey);
+    final raw = await AppDatabase.instance.getString(_storageKey);
     final today = _todayKey();
 
     if (raw != null && raw.isNotEmpty) {
@@ -99,13 +98,12 @@ class QuotaTracker extends ChangeNotifier {
   }
 
   Future<void> _save() async {
-    final prefs = await SharedPreferences.getInstance();
     final data = {
       'date': _dateKey,
       'used': _used,
       'breakdown': _breakdown,
     };
-    await prefs.setString(_storageKey, jsonEncode(data));
+    await AppDatabase.instance.setString(_storageKey, jsonEncode(data));
   }
 
   static String _todayKey() {

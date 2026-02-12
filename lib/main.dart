@@ -10,7 +10,7 @@ import 'screens/videos_screen.dart';
 import 'services/ai_cost_tracker.dart';
 import 'services/quota_tracker.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ArisApp());
 }

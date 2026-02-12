@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-
 import '../models/youtube_subscription.dart';
 import '../services/youtube_api_service.dart';
 import '../services/quota_tracker.dart';
 import '../storage/subscription_lists_store.dart';
 import '../ui/list_icons.dart';
+import 'channel_videos_screen.dart';
 
 class ListsScreen extends StatefulWidget {
   const ListsScreen({
@@ -279,6 +279,27 @@ class _ListsScreenState extends State<ListsScreen> {
     );
   }
 
+  void _openChannelVideos(YouTubeSubscription subscription) {
+    final channelId = subscription.channelId.trim();
+    if (channelId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se encontró el canal.')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChannelVideosScreen(
+          accessToken: _accessToken,
+          channelId: channelId,
+          channelTitle: subscription.title,
+          channelAvatarUrl: subscription.thumbnailUrl,
+          quotaTracker: widget.quotaTracker,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -452,8 +473,12 @@ class _ListsScreenState extends State<ListsScreen> {
               horizontal: 16,
               vertical: 8,
             ),
-            leading: _SubscriptionThumbnail(
-              url: subscription.thumbnailUrl,
+            leading: InkWell(
+              onTap: () => _openChannelVideos(subscription),
+              borderRadius: BorderRadius.circular(28),
+              child: _SubscriptionThumbnail(
+                url: subscription.thumbnailUrl,
+              ),
             ),
             title: Text(
               subscription.title,

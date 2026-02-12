@@ -129,7 +129,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _loadingVoices = true;
   String _selectedVoiceName = '';
   String _selectedVoiceLocale = '';
-  bool _previewingVoice = false;
+  String? _previewingVoiceId;
   final TextEditingController _apiKeyController = TextEditingController();
   final TextEditingController _sftpHostController =
       TextEditingController(text: '192.168.1.33');
@@ -152,8 +152,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Map<String, Set<String>> _assignments = {};
 
   static final RegExp _backupFilePattern =
-      RegExp(r'^aris_backup_(\d{12})\.json$');
+      RegExp(r'^aris_backup_(\d{12})\.db$');
   static const String _voiceSeparator = '::';
+  static const String _defaultVoicePreviewId = '_default_voice';
 
   @override
   void dispose() {
@@ -244,21 +245,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<void> _previewVoice() async {
-    if (_previewingVoice) return;
+  Future<void> _previewVoice({
+    required String previewId,
+    String? name,
+    String? locale,
+  }) async {
+    if (_previewingVoiceId != null) return;
     setState(() {
-      _previewingVoice = true;
+      _previewingVoiceId = previewId;
     });
     try {
       await _tts.stop();
-      if (_selectedVoiceLocale.isNotEmpty) {
-        await _tts.setLanguage(_selectedVoiceLocale);
-      }
-      if (_selectedVoiceName.isNotEmpty &&
-          _selectedVoiceLocale.isNotEmpty) {
+      final targetLocale =
+          (locale != null && locale.isNotEmpty) ? locale : 'es-ES';
+      await _tts.setLanguage(targetLocale);
+      if (name != null &&
+          name.isNotEmpty &&
+          locale != null &&
+          locale.isNotEmpty) {
         await _tts.setVoice({
-          'name': _selectedVoiceName,
-          'locale': _selectedVoiceLocale,
+          'name': name,
+          'locale': locale,
         });
       }
       await _tts.speak(
@@ -267,7 +274,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } finally {
       if (mounted) {
         setState(() {
-          _previewingVoice = false;
+          _previewingVoiceId = null;
         });
       }
     }
@@ -1056,55 +1063,96 @@ class _ProfileScreenState extends State<ProfileScreen> {
         (_selectedVoiceName.isNotEmpty && _selectedVoiceLocale.isNotEmpty)
             ? _voiceId(_selectedVoiceName, _selectedVoiceLocale)
             : '';
-    final voiceValue =
+    final selectedId =
         _voiceOptions.any((option) => option.id == currentVoiceId)
             ? currentVoiceId
             : '';
+    final previewingId = _previewingVoiceId;
+    final canPreview = !_loadingVoices && previewingId == null;
+    final helperStyle = Theme.of(context)
+        .textTheme
+        .bodySmall
+        ?.copyWith(color: Colors.white70);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          DropdownButtonFormField<String>(
-            value: voiceValue,
-            items: [
-              const DropdownMenuItem(
-                value: '',
-                child: Text('Predeterminada'),
-              ),
-              ..._voiceOptions.map(
-                (option) => DropdownMenuItem(
-                  value: option.id,
-                  child: Text(option.label),
-                ),
-              ),
-            ],
-            onChanged: _loadingVoices ? null : _onVoiceChanged,
-            decoration: InputDecoration(
-              labelText: 'Voz',
-              helperText: _loadingVoices
-                  ? 'Cargando voces...'
-                  : 'Selecciona la voz del narrador (solo español).',
-              border: const OutlineInputBorder(),
+          Text(
+            'Selecciona la voz del narrador (solo español).',
+            style: helperStyle,
+          ),
+          if (_loadingVoices) ...[
+            const SizedBox(height: 12),
+            const LinearProgressIndicator(),
+          ],
+          if (!_loadingVoices && _voiceOptions.isEmpty) ...[
+            const SizedBox(height: 12),
+            const Text('No se encontraron voces en español.'),
+          ],
+          const SizedBox(height: 8),
+          _buildVoiceOptionTile(
+            label: 'Predeterminada',
+            value: '',
+            selectedValue: selectedId,
+            previewId: _defaultVoicePreviewId,
+            canPreview: canPreview,
+            isPreviewing: previewingId == _defaultVoicePreviewId,
+            onSelect: () => _onVoiceChanged(''),
+            onPreview: () => _previewVoice(
+              previewId: _defaultVoicePreviewId,
             ),
           ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed:
-                _loadingVoices || _previewingVoice ? null : _previewVoice,
-            icon: _previewingVoice
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.volume_up),
-            label: Text(
-              _previewingVoice ? 'Reproduciendo...' : 'Probar voz',
+          for (final option in _voiceOptions)
+            _buildVoiceOptionTile(
+              label: option.label,
+              value: option.id,
+              selectedValue: selectedId,
+              previewId: option.id,
+              canPreview: canPreview,
+              isPreviewing: previewingId == option.id,
+              onSelect: () => _onVoiceChanged(option.id),
+              onPreview: () => _previewVoice(
+                previewId: option.id,
+                name: option.name,
+                locale: option.locale,
+              ),
             ),
-          ),
         ],
       ),
+    );
+  }
+
+  Widget _buildVoiceOptionTile({
+    required String label,
+    required String value,
+    required String selectedValue,
+    required String previewId,
+    required bool canPreview,
+    required bool isPreviewing,
+    required VoidCallback onSelect,
+    required VoidCallback onPreview,
+  }) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Radio<String>(
+        value: value,
+        groupValue: selectedValue,
+        onChanged: (_) => onSelect(),
+      ),
+      title: Text(label),
+      trailing: IconButton(
+        onPressed: canPreview && !isPreviewing ? onPreview : null,
+        icon: isPreviewing
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.volume_up),
+        tooltip: isPreviewing ? 'Reproduciendo...' : 'Reproducir demo',
+      ),
+      onTap: onSelect,
     );
   }
 

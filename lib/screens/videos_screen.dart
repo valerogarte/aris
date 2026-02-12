@@ -7,8 +7,10 @@ import 'video_detail_screen.dart';
 import '../services/quota_tracker.dart';
 import '../storage/subscription_lists_store.dart';
 import '../storage/expiring_cache_store.dart';
+import '../storage/ai_settings_store.dart';
 import '../ui/list_icons.dart';
 import '../services/ai_cost_tracker.dart';
+import '../ui/channel_avatar.dart';
 
 String formatRelativeTime(DateTime date) {
   final now = DateTime.now().toLocal();
@@ -70,6 +72,7 @@ class VideosScreen extends StatefulWidget {
 class _VideosScreenState extends State<VideosScreen> {
   late YouTubeApiService _api;
   final SubscriptionListsStore _listsStore = SubscriptionListsStore();
+  final AiSettingsStore _aiSettingsStore = AiSettingsStore();
   late String _accessToken;
   bool _loading = true;
   String? _error;
@@ -77,11 +80,16 @@ class _VideosScreenState extends State<VideosScreen> {
   List<SubscriptionList> _lists = const [];
   Map<String, Set<String>> _assignments = {};
   final ExpiringCacheStore _avatarCache = ExpiringCacheStore('channel_avatars');
+  final ExpiringCacheStore _summaryCache = ExpiringCacheStore('summaries');
   Map<String, String> _channelAvatars = {};
+  Map<String, bool> _summaryByVideoId = {};
   bool _loadingAvatars = false;
   String? _selectedListId;
   int? _selectedListChannels;
   VoidCallback? _listsVersionListener;
+  final ScrollController _listsScrollController = ScrollController();
+  final Map<String, GlobalKey> _listChipKeys = {};
+  String? _lastScrolledListId;
 
   @override
   void initState() {
@@ -96,6 +104,9 @@ class _VideosScreenState extends State<VideosScreen> {
       _handleListsVersionChanged();
     };
     widget.listsVersion?.addListener(_listsVersionListener!);
+    _listsScrollController.addListener(() {
+      // keep controller alive; offset is preserved automatically
+    });
   }
 
   @override
@@ -109,6 +120,7 @@ class _VideosScreenState extends State<VideosScreen> {
     if (_listsVersionListener != null) {
       widget.listsVersion?.removeListener(_listsVersionListener!);
     }
+    _listsScrollController.dispose();
     _api.dispose();
     super.dispose();
   }
@@ -128,7 +140,12 @@ class _VideosScreenState extends State<VideosScreen> {
         if (_selectedListId == null && data.lists.isNotEmpty) {
           _selectedListId = data.lists.first.id;
         }
+        _listChipKeys.removeWhere((key, _) => !listIds.contains(key));
+        for (final list in data.lists) {
+          _listChipKeys.putIfAbsent(list.id, () => GlobalKey());
+        }
       });
+      _scrollToSelectedChip();
     } catch (_) {
       // No-op: listas no bloquean la pantalla de videos.
     }
@@ -140,6 +157,27 @@ class _VideosScreenState extends State<VideosScreen> {
     if (_selectedListId != null) {
       await _loadVideos(userInitiated: false, listId: _selectedListId);
     }
+  }
+
+  void _scrollToSelectedChip({bool animate = true}) {
+    final selectedId = _selectedListId;
+    if (selectedId == null) return;
+    if (_lastScrolledListId == selectedId && _listsScrollController.hasClients) {
+      return;
+    }
+    final key = _listChipKeys[selectedId];
+    if (key == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = key.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.5,
+        duration: animate ? const Duration(milliseconds: 250) : Duration.zero,
+        curve: Curves.easeOut,
+      );
+      _lastScrolledListId = selectedId;
+    });
   }
 
   bool _hasAssignments(String listId) {
@@ -212,6 +250,7 @@ class _VideosScreenState extends State<VideosScreen> {
         _loading = false;
       });
       await _loadChannelAvatars(videos);
+      await _loadSummaryFlags(videos);
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -274,12 +313,51 @@ class _VideosScreenState extends State<VideosScreen> {
     }
   }
 
+  Future<void> _loadSummaryFlags(List<YouTubeVideo> videos) async {
+    if (videos.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _summaryByVideoId = {};
+        });
+      }
+      return;
+    }
+    try {
+      final settings = await _aiSettingsStore.load();
+      if (!mounted) return;
+      final entries = await Future.wait(
+        videos.map((video) async {
+          final id = video.id.trim();
+          if (id.isEmpty) {
+            return const MapEntry<String, bool>('', false);
+          }
+          final key = '${settings.provider}:${settings.model}:$id';
+          final summary = await _summaryCache.get(key);
+          final hasSummary = summary != null && summary.trim().isNotEmpty;
+          return MapEntry(id, hasSummary);
+        }),
+      );
+      if (!mounted) return;
+      final map = <String, bool>{};
+      for (final entry in entries) {
+        if (entry.key.isEmpty) continue;
+        map[entry.key] = entry.value;
+      }
+      setState(() {
+        _summaryByVideoId = map;
+      });
+    } catch (_) {
+      // Ignore summary flag errors.
+    }
+  }
+
   Future<void> _handleListTap(String listId) async {
     if (_selectedListId == listId) return;
     final next = listId;
     setState(() {
       _selectedListId = next;
     });
+    _scrollToSelectedChip();
     await _loadVideos(userInitiated: true, listId: next);
   }
 
@@ -348,23 +426,27 @@ class _VideosScreenState extends State<VideosScreen> {
               hasAssignments: _hasAssignments,
               selectedListId: _selectedListId,
               onSelectList: _handleListTap,
+              scrollController: _listsScrollController,
+              chipKeys: _listChipKeys,
             );
           }
           final video = _videos[index - 1];
           return _VideoCard(
             video: video,
             channelAvatarUrl: _channelAvatars[video.channelId] ?? '',
+            hasSummary: _summaryByVideoId[video.id] ?? false,
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => VideoDetailScreen(
                     video: video,
                     accessToken: _accessToken,
+                    channelAvatarUrl: _channelAvatars[video.channelId] ?? '',
                     quotaTracker: widget.quotaTracker,
                     aiCostTracker: widget.aiCostTracker,
                   ),
                 ),
-              );
+              ).then((_) => _loadSummaryFlags(_videos));
             },
           );
         },
@@ -379,11 +461,13 @@ class _VideoCard extends StatelessWidget {
   const _VideoCard({
     required this.video,
     required this.channelAvatarUrl,
+    required this.hasSummary,
     required this.onTap,
   });
 
   final YouTubeVideo video;
   final String channelAvatarUrl;
+  final bool hasSummary;
   final VoidCallback onTap;
 
   @override
@@ -411,9 +495,20 @@ class _VideoCard extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _ChannelAvatar(
-                  name: video.channelTitle,
-                  imageUrl: channelAvatarUrl,
+                Column(
+                  children: [
+                    ChannelAvatar(
+                      name: video.channelTitle,
+                      imageUrl: channelAvatarUrl,
+                    ),
+                    const SizedBox(height: 6),
+                    if (hasSummary)
+                      const Icon(
+                        Icons.check_circle,
+                        color: Color(0xFFFA1021),
+                        size: 16,
+                      ),
+                  ],
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -449,58 +544,6 @@ class _VideoCard extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _ChannelAvatar extends StatelessWidget {
-  const _ChannelAvatar({
-    required this.name,
-    required this.imageUrl,
-  });
-
-  final String name;
-  final String imageUrl;
-
-  String _initial() {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return '?';
-    return String.fromCharCode(trimmed.runes.first).toUpperCase();
-  }
-
-  Widget _fallbackAvatar() {
-    return Container(
-      width: 36,
-      height: 36,
-      decoration: const BoxDecoration(
-        color: Color(0xFF272727),
-        shape: BoxShape.circle,
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        _initial(),
-        style: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (imageUrl.isEmpty) {
-      return _fallbackAvatar();
-    }
-
-    return ClipOval(
-      child: Image.network(
-        imageUrl,
-        width: 36,
-        height: 36,
-        fit: BoxFit.cover,
-        errorBuilder: (context, _, __) => _fallbackAvatar(),
       ),
     );
   }
@@ -595,12 +638,16 @@ class _ListsChipsRow extends StatelessWidget {
     required this.hasAssignments,
     required this.selectedListId,
     required this.onSelectList,
+    required this.scrollController,
+    required this.chipKeys,
   });
 
   final List<SubscriptionList> lists;
   final bool Function(String listId) hasAssignments;
   final String? selectedListId;
   final ValueChanged<String> onSelectList;
+  final ScrollController scrollController;
+  final Map<String, GlobalKey> chipKeys;
 
   @override
   Widget build(BuildContext context) {
@@ -613,6 +660,7 @@ class _ListsChipsRow extends StatelessWidget {
       child: ListView.separated(
         padding: const EdgeInsets.symmetric(horizontal: 12),
         scrollDirection: Axis.horizontal,
+        controller: scrollController,
         itemCount: lists.length,
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
@@ -625,6 +673,7 @@ class _ListsChipsRow extends StatelessWidget {
                   ? Colors.white70
                   : Colors.white38;
           return ChoiceChip(
+            key: chipKeys[list.id],
             avatar: Icon(
               iconForListKey(list.iconKey),
               size: 18,

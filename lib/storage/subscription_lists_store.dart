@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'app_database.dart';
 
 class SubscriptionList {
   SubscriptionList({
@@ -50,8 +50,7 @@ class SubscriptionListsStore {
   static const String _storageKey = 'subscription_lists_state';
 
   Future<SubscriptionListsData> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_storageKey);
+    final raw = await AppDatabase.instance.getString(_storageKey);
     if (raw == null || raw.isEmpty) {
       return SubscriptionListsData(
         lists: const [],
@@ -85,13 +84,12 @@ class SubscriptionListsStore {
     List<SubscriptionList> lists,
     Map<String, Set<String>> assignments,
   ) async {
-    final prefs = await SharedPreferences.getInstance();
     final data = {
       'lists': lists.map((list) => list.toJson()).toList(),
       'assignments': assignments.map(
         (key, value) => MapEntry(key, value.toList()),
       ),
     };
-    await prefs.setString(_storageKey, jsonEncode(data));
+    await AppDatabase.instance.setString(_storageKey, jsonEncode(data));
   }
 }

@@ -12,16 +12,27 @@ import '../models/youtube_caption_track.dart';
 import '../models/youtube_video.dart';
 import '../services/quota_tracker.dart';
 import '../services/ai_summary_service.dart';
+import '../services/youtube_api_service.dart';
 import '../services/youtube_transcript_service.dart';
 import '../storage/ai_settings_store.dart';
 import '../storage/expiring_cache_store.dart';
 import '../services/ai_cost_tracker.dart';
+import '../ui/channel_avatar.dart';
+import 'channel_videos_screen.dart';
 
 class VideoDetailScreen extends StatefulWidget {
-  const VideoDetailScreen({super.key, required this.video, required this.accessToken, this.quotaTracker, this.aiCostTracker});
+  const VideoDetailScreen({
+    super.key,
+    required this.video,
+    required this.accessToken,
+    this.channelAvatarUrl = '',
+    this.quotaTracker,
+    this.aiCostTracker,
+  });
 
   final YouTubeVideo video;
   final String accessToken;
+  final String channelAvatarUrl;
   final QuotaTracker? quotaTracker;
   final AiCostTracker? aiCostTracker;
 
@@ -31,12 +42,17 @@ class VideoDetailScreen extends StatefulWidget {
 
 class _VideoDetailScreenState extends State<VideoDetailScreen> {
   static const Duration _cacheTtl = Duration(days: 2);
+  static const int _summaryPreviewLines = 10;
+  static const int _ttsChunkLimit = 1000;
 
   late final YouTubeTranscriptService _transcripts;
+  late final YouTubeApiService _api;
   final AiSettingsStore _aiSettingsStore = AiSettingsStore();
   late final AiSummaryService _aiSummaryService;
   late final ExpiringCacheStore _transcriptCache;
   late final ExpiringCacheStore _summaryCache;
+  final ExpiringCacheStore _avatarCache =
+      ExpiringCacheStore('channel_avatars');
   YoutubePlayerController? _playerController;
   Timer? _playerTimeout;
   bool _playerReady = false;
@@ -53,18 +69,35 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   bool _loadingTranscript = false;
   bool _loadingSummary = false;
   bool _summaryRequested = false;
+  bool _summaryInFlight = false;
+  bool _disposePending = false;
+  bool _aiServiceDisposed = false;
   late final FlutterTts _tts;
   bool _ttsReady = false;
   bool _ttsPlaying = false;
   bool _ttsPaused = false;
   _TtsTarget _ttsTarget = _TtsTarget.none;
   String _ttsSpeechText = '';
+  List<_TtsChunk> _ttsQueue = const [];
+  int _ttsQueueIndex = 0;
+  int _ttsChunkOffset = 0;
+  String _ttsChunkText = '';
+  bool _ttsSequenceActive = false;
+  int _ttsQuestionsStartOffset = 0;
+  bool _ttsQuestionsFromMainActive = false;
   int _ttsHighlightStart = 0;
   int _ttsMainHighlightEnd = 0;
   int _ttsIntroHighlightEnd = 0;
+  String _ttsQuestionsText = '';
+  int _ttsQuestionsPrefixLength = 0;
+  List<_QuestionRange> _ttsQuestionRanges = const [];
+  List<int> _ttsQuestionHighlightEnds = const [];
   String? _summaryIntro;
   String? _summaryMain;
   List<String> _summaryQuestions = const [];
+  String _channelAvatarUrl = '';
+  bool _loadingChannelAvatar = false;
+  bool _summaryMainExpanded = false;
   bool _transcriptExpanded = false;
   _SummaryTab _activeTab = _SummaryTab.summary;
 
@@ -72,25 +105,41 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   void initState() {
     super.initState();
     _transcripts = YouTubeTranscriptService();
+    _api = YouTubeApiService(
+      accessToken: widget.accessToken,
+      quotaTracker: widget.quotaTracker,
+    );
     _aiSummaryService = AiSummaryService(costTracker: widget.aiCostTracker);
     _tts = FlutterTts();
     _configureTts();
     _transcriptCache = ExpiringCacheStore('transcripts');
     _summaryCache = ExpiringCacheStore('summaries');
+    _channelAvatarUrl = widget.channelAvatarUrl;
     _log('init video=${widget.video.id}');
     _initPlayer();
+    _loadChannelAvatar();
     _loadSummaryFromVideoCache();
     _ensureTranscriptLoaded();
   }
 
   @override
   void dispose() {
+    _disposePending = true;
     _playerTimeout?.cancel();
     _playerController?.dispose();
     _transcripts.dispose();
-    _aiSummaryService.dispose();
+    _api.dispose();
+    if (!_summaryInFlight) {
+      _disposeAiService();
+    }
     _tts.stop();
     super.dispose();
+  }
+
+  void _disposeAiService() {
+    if (_aiServiceDisposed) return;
+    _aiSummaryService.dispose();
+    _aiServiceDisposed = true;
   }
 
   void _initPlayer() {
@@ -134,6 +183,61 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _playerStuck = false;
       });
     }
+  }
+
+  Future<void> _loadChannelAvatar() async {
+    if (_loadingChannelAvatar) return;
+    if (_channelAvatarUrl.isNotEmpty) return;
+    final channelId = widget.video.channelId.trim();
+    if (channelId.isEmpty) return;
+    _loadingChannelAvatar = true;
+    try {
+      final cached = await _avatarCache.get(channelId);
+      if (!mounted) return;
+      if (cached != null && cached.isNotEmpty) {
+        setState(() {
+          _channelAvatarUrl = cached;
+        });
+        return;
+      }
+      final fetched = await _api.fetchChannelThumbnails([channelId]);
+      if (!mounted) return;
+      final url = fetched[channelId];
+      if (url != null && url.isNotEmpty) {
+        await _avatarCache.set(channelId, url, _cacheTtl);
+        if (mounted) {
+          setState(() {
+            _channelAvatarUrl = url;
+          });
+        }
+      }
+    } catch (_) {
+      // Ignore avatar errors.
+    } finally {
+      _loadingChannelAvatar = false;
+    }
+  }
+
+  void _openChannelVideos() {
+    final channelId = widget.video.channelId.trim();
+    if (channelId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se encontró el canal.')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChannelVideosScreen(
+          accessToken: widget.accessToken,
+          channelId: channelId,
+          channelTitle: widget.video.channelTitle,
+          channelAvatarUrl: _channelAvatarUrl,
+          quotaTracker: widget.quotaTracker,
+          aiCostTracker: widget.aiCostTracker,
+        ),
+      ),
+    );
   }
 
   Future<void> _loadTracksIfNeeded({bool silent = false}) async {
@@ -271,11 +375,21 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       if (!_ttsPlaying || _ttsTarget == _TtsTarget.none) {
         return;
       }
-      final targetText =
-          _ttsTarget == _TtsTarget.intro ? _summaryIntro : _summaryMain;
+      String? targetText;
+      if (_ttsTarget == _TtsTarget.intro) {
+        targetText = _summaryIntro;
+      } else if (_ttsTarget == _TtsTarget.main) {
+        targetText = _summaryMain;
+      } else {
+        targetText = _ttsSpeechText;
+      }
       if (targetText == null || targetText.isEmpty) return;
       var baseOffset = 0;
-      if (_ttsSpeechText.isNotEmpty && text != _ttsSpeechText) {
+      if (_ttsSequenceActive &&
+          _ttsTarget == _TtsTarget.main &&
+          _ttsChunkText.isNotEmpty) {
+        baseOffset = _ttsChunkOffset;
+      } else if (_ttsSpeechText.isNotEmpty && text != _ttsSpeechText) {
         if (_ttsSpeechText.endsWith(text)) {
           baseOffset = _ttsSpeechText.length - text.length;
         } else {
@@ -290,18 +404,63 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       final targetLen = targetText.length;
       final safeStart = start.clamp(0, text.length);
       final safeEnd = end.clamp(0, text.length);
+      final progressIndex =
+          _ttsTarget == _TtsTarget.main ? safeStart : safeEnd;
+      final speechLen =
+          (_ttsTarget == _TtsTarget.main && _ttsSpeechText.isNotEmpty)
+              ? _ttsSpeechText.length
+              : targetLen;
+      final speechEnd = (baseOffset + progressIndex).clamp(0, speechLen);
       final highlightStart = (baseOffset + safeStart).clamp(0, targetLen);
-      final highlightEnd = (baseOffset + safeEnd).clamp(0, targetLen);
+      final highlightEnd = speechEnd.clamp(0, targetLen);
       setState(() {
         _ttsHighlightStart = highlightStart;
         if (_ttsTarget == _TtsTarget.intro) {
           _ttsIntroHighlightEnd = highlightEnd > _ttsIntroHighlightEnd
               ? highlightEnd
               : _ttsIntroHighlightEnd;
-        } else {
+        } else if (_ttsTarget == _TtsTarget.main) {
           _ttsMainHighlightEnd = highlightEnd > _ttsMainHighlightEnd
               ? highlightEnd
               : _ttsMainHighlightEnd;
+          if (_ttsQuestionsStartOffset > 0 &&
+              _ttsQuestionRanges.isNotEmpty) {
+            final relativeEnd = speechEnd - _ttsQuestionsStartOffset;
+            _ttsQuestionsFromMainActive = relativeEnd > 0;
+            if (relativeEnd > 0) {
+              final updated = List<int>.from(_ttsQuestionHighlightEnds);
+              for (var i = 0; i < _ttsQuestionRanges.length; i++) {
+                final range = _ttsQuestionRanges[i];
+                if (relativeEnd <= range.start) {
+                  continue;
+                }
+                final clamped =
+                    (relativeEnd.clamp(range.start, range.end)) - range.start;
+                if (i < updated.length && clamped > updated[i]) {
+                  updated[i] = clamped;
+                }
+              }
+              _ttsQuestionHighlightEnds = updated;
+            }
+          } else {
+            _ttsQuestionsFromMainActive = false;
+          }
+        } else if (_ttsTarget == _TtsTarget.questions) {
+          final relativeEnd = highlightEnd - _ttsQuestionsPrefixLength;
+          if (relativeEnd <= 0) return;
+          final updated = List<int>.from(_ttsQuestionHighlightEnds);
+          for (var i = 0; i < _ttsQuestionRanges.length; i++) {
+            final range = _ttsQuestionRanges[i];
+            if (relativeEnd <= range.start) {
+              continue;
+            }
+            final clamped =
+                (relativeEnd.clamp(range.start, range.end)) - range.start;
+            if (i < updated.length && clamped > updated[i]) {
+              updated[i] = clamped;
+            }
+          }
+          _ttsQuestionHighlightEnds = updated;
         }
       });
     });
@@ -326,6 +485,14 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     });
     _tts.setCompletionHandler(() {
       if (!mounted) return;
+      if (_ttsSequenceActive && _ttsQueue.isNotEmpty) {
+        if (_ttsQueueIndex + 1 < _ttsQueue.length) {
+          _ttsQueueIndex += 1;
+          _speakNextChunk();
+          return;
+        }
+        _resetTtsQueue();
+      }
       setState(() {
         _ttsPlaying = false;
         _ttsPaused = false;
@@ -333,11 +500,16 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _ttsHighlightStart = 0;
         _ttsMainHighlightEnd = 0;
         _ttsIntroHighlightEnd = 0;
+        _ttsQuestionsText = '';
+        _ttsQuestionsPrefixLength = 0;
+        _ttsQuestionRanges = const [];
+        _ttsQuestionHighlightEnds = const [];
         _ttsSpeechText = '';
       });
     });
     _tts.setErrorHandler((_) {
       if (!mounted) return;
+      _resetTtsQueue();
       setState(() {
         _ttsPlaying = false;
         _ttsPaused = false;
@@ -345,6 +517,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _ttsHighlightStart = 0;
         _ttsMainHighlightEnd = 0;
         _ttsIntroHighlightEnd = 0;
+        _ttsQuestionsText = '';
+        _ttsQuestionsPrefixLength = 0;
+        _ttsQuestionRanges = const [];
+        _ttsQuestionHighlightEnds = const [];
         _ttsSpeechText = '';
       });
     });
@@ -418,6 +594,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _summaryIntro = null;
       _summaryMain = null;
       _summaryQuestions = const [];
+      _summaryMainExpanded = false;
       _loadingSummary = true;
       _activeTab = _SummaryTab.summary;
     });
@@ -427,45 +604,49 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
   Future<void> _maybeGenerateSummary() async {
     if (!_summaryRequested || _loadingTranscript || _loadingTracks) return;
-    if (_selectedTrack == null) {
-      _log('summary: waiting for transcript');
-      await _ensureTranscriptLoaded();
-      return;
-    }
-
-    final text = _transcript ?? '';
-    if (text.isEmpty) {
-      if (_error == null) {
+    _summaryInFlight = true;
+    try {
+      if (_selectedTrack == null) {
+        _log('summary: waiting for transcript');
         await _ensureTranscriptLoaded();
         return;
       }
-      if (mounted) {
-        setState(() {
-          _summaryError = 'No hay texto para resumir.';
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
-      }
-      return;
-    }
 
-    try {
+      final text = _transcript ?? '';
+      if (text.isEmpty) {
+        if (_error == null) {
+          await _ensureTranscriptLoaded();
+          return;
+        }
+        if (mounted) {
+          setState(() {
+            _summaryError = 'No hay texto para resumir.';
+            _loadingSummary = false;
+            _summaryRequested = false;
+          });
+        }
+        return;
+      }
+
       final settings = await _aiSettingsStore.load();
-      if (!mounted) return;
       if (settings.apiKey.isEmpty) {
-        setState(() {
-          _summaryError = 'Configura una clave API en el perfil.';
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
+        if (mounted) {
+          setState(() {
+            _summaryError = 'Configura una clave API en el perfil.';
+            _loadingSummary = false;
+            _summaryRequested = false;
+          });
+        }
         return;
       }
       if (settings.model.isEmpty) {
-        setState(() {
-          _summaryError = 'Selecciona un modelo en el perfil.';
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
+        if (mounted) {
+          setState(() {
+            _summaryError = 'Selecciona un modelo en el perfil.';
+            _loadingSummary = false;
+            _summaryRequested = false;
+          });
+        }
         return;
       }
 
@@ -473,12 +654,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       final summaryKey = '${settings.provider}:${settings.model}:${widget.video.id}:$trackKey';
       final cachedSummary = await _summaryCache.get(summaryKey);
       if (cachedSummary != null && cachedSummary.isNotEmpty) {
-        if (!mounted) return;
-        setState(() {
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
-        _applySummary(cachedSummary);
+        if (mounted) {
+          setState(() {
+            _loadingSummary = false;
+            _summaryRequested = false;
+          });
+          _applySummary(cachedSummary);
+        }
         _log('summary: cache hit key=$summaryKey');
         return;
       }
@@ -486,12 +668,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
           '${settings.provider}:${settings.model}:${widget.video.id}';
       final fallbackSummary = await _summaryCache.get(fallbackKey);
       if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
-        if (!mounted) return;
-        setState(() {
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
-        _applySummary(fallbackSummary);
+        if (mounted) {
+          setState(() {
+            _loadingSummary = false;
+            _summaryRequested = false;
+          });
+          _applySummary(fallbackSummary);
+        }
         _log(
           'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
         );
@@ -500,25 +683,32 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
       _log('summary: calling provider=${settings.provider} model=${settings.model}');
       final summary = await _aiSummaryService.summarize(provider: settings.provider, model: settings.model, apiKey: settings.apiKey, transcript: text, title: widget.video.title, channel: widget.video.channelTitle);
-      if (!mounted) return;
-      setState(() {
-        _loadingSummary = false;
-        _summaryRequested = false;
-      });
-      _applySummary(summary);
       if (summary.isNotEmpty) {
         await _summaryCache.set(summaryKey, summary, _cacheTtl);
         await _summaryCache.set(fallbackKey, summary, _cacheTtl);
         _log('summary: cached key=$summaryKey len=${summary.length}');
       }
+      if (mounted) {
+        setState(() {
+          _loadingSummary = false;
+          _summaryRequested = false;
+        });
+        _applySummary(summary);
+      }
     } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _summaryError = 'No se pudo generar el resumen.\n$error';
-        _loadingSummary = false;
-        _summaryRequested = false;
-      });
+      if (mounted) {
+        setState(() {
+          _summaryError = 'No se pudo generar el resumen.\n$error';
+          _loadingSummary = false;
+          _summaryRequested = false;
+        });
+      }
       _log('summary: error $error');
+    } finally {
+      _summaryInFlight = false;
+      if (_disposePending) {
+        _disposeAiService();
+      }
     }
   }
 
@@ -546,6 +736,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         // Ignore parse errors.
       }
     }
+    _resetTtsQueue();
     setState(() {
       if (raw != null && raw.trim().isNotEmpty) {
         _summaryError = null;
@@ -554,18 +745,29 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _summaryIntro = intro;
       _summaryMain = main;
       _summaryQuestions = questions;
+      _summaryMainExpanded = false;
       _ttsTarget = _TtsTarget.none;
       _ttsPaused = false;
       _ttsHighlightStart = 0;
       _ttsMainHighlightEnd = 0;
       _ttsIntroHighlightEnd = 0;
+      _ttsQuestionsText = '';
+      _ttsQuestionsPrefixLength = 0;
+      _ttsQuestionRanges = const [];
+      _ttsQuestionHighlightEnds = const [];
       _ttsSpeechText = '';
     });
   }
 
-  String _buildSpeechText() {
+  _MainSpeech _buildMainSpeech() {
     final main = _summaryMain?.trim() ?? '';
-    if (main.isEmpty) return '';
+    if (main.isEmpty) {
+      return const _MainSpeech(
+        text: '',
+        questionsOffset: 0,
+        questionRanges: <_QuestionRange>[],
+      );
+    }
     final buffer = StringBuffer(main);
     final questions = _summaryQuestions.take(3).toList();
     if (questions.isNotEmpty) {
@@ -573,15 +775,132 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       if (lastChar != '.' && lastChar != '!' && lastChar != '?') {
         buffer.write('.');
       }
-      buffer.write(' Te dejo algunas preguntas para reflexionar: ');
-      for (var i = 0; i < questions.length; i++) {
-        buffer.write('Pregunta ${i + 1}: ${questions[i]}');
-        if (i < questions.length - 1) {
-          buffer.write('. ');
+      const prefix = ' Te dejo algunas preguntas para reflexionar: ';
+      buffer.write(prefix);
+      final questionsOffset = buffer.length;
+      final questionsSpeech = _buildQuestionsSpeech();
+      buffer.write(questionsSpeech.questionText);
+      return _MainSpeech(
+        text: buffer.toString(),
+        questionsOffset: questionsOffset,
+        questionRanges: questionsSpeech.ranges,
+      );
+    }
+    return _MainSpeech(
+      text: buffer.toString(),
+      questionsOffset: 0,
+      questionRanges: const <_QuestionRange>[],
+    );
+  }
+
+  void _resetTtsQueueOnly() {
+    _ttsQueue = const [];
+    _ttsQueueIndex = 0;
+    _ttsChunkOffset = 0;
+    _ttsChunkText = '';
+    _ttsSequenceActive = false;
+  }
+
+  void _resetTtsQueue() {
+    _resetTtsQueueOnly();
+    _ttsQuestionsStartOffset = 0;
+    _ttsQuestionsFromMainActive = false;
+  }
+
+  List<_TtsChunk> _splitTtsText(String text) {
+    if (text.isEmpty) return const [];
+    final chunks = <_TtsChunk>[];
+    var index = 0;
+    final length = text.length;
+    while (index < length) {
+      while (index < length && text[index].trim().isEmpty) {
+        index++;
+      }
+      if (index >= length) break;
+      final maxEnd =
+          (index + _ttsChunkLimit < length) ? index + _ttsChunkLimit : length;
+      var breakPos = maxEnd;
+      if (maxEnd < length) {
+        final slice = text.substring(index, maxEnd);
+        var matchIndex = slice.lastIndexOf(RegExp(r'[.!?]\s'));
+        if (matchIndex >= 0) {
+          breakPos = index + matchIndex + 1;
+        } else {
+          matchIndex = slice.lastIndexOf(RegExp(r'[,:;]\s'));
+          if (matchIndex >= 0) {
+            breakPos = index + matchIndex + 1;
+          } else {
+            matchIndex = slice.lastIndexOf(' ');
+            if (matchIndex >= 0) {
+              breakPos = index + matchIndex;
+            }
+          }
         }
       }
+      if (breakPos <= index) {
+        breakPos = maxEnd;
+      }
+      final chunkText = text.substring(index, breakPos);
+      if (chunkText.trim().isNotEmpty) {
+        chunks.add(_TtsChunk(chunkText, index));
+      }
+      index = breakPos;
     }
-    return buffer.toString();
+    return chunks;
+  }
+
+  Future<void> _speakNextChunk() async {
+    if (_ttsQueueIndex >= _ttsQueue.length) return;
+    final chunk = _ttsQueue[_ttsQueueIndex];
+    _ttsChunkOffset = chunk.offset;
+    _ttsChunkText = chunk.text;
+    await _tts.speak(chunk.text);
+  }
+
+  Future<void> _startTtsSequence(String speechText) async {
+    _resetTtsQueueOnly();
+    final chunks = _splitTtsText(speechText);
+    if (chunks.length <= 1) {
+      await _tts.speak(speechText);
+      return;
+    }
+    _ttsQueue = chunks;
+    _ttsQueueIndex = 0;
+    _ttsSequenceActive = true;
+    await _speakNextChunk();
+  }
+
+  _QuestionsSpeech _buildQuestionsSpeech() {
+    final questions = _summaryQuestions.take(3).toList();
+    if (questions.isEmpty) {
+      return const _QuestionsSpeech(
+        speechText: '',
+        prefixLength: 0,
+        questionText: '',
+        ranges: <_QuestionRange>[],
+      );
+    }
+    final questionRanges = <_QuestionRange>[];
+    final questionsBuffer = StringBuffer();
+    var offset = 0;
+    for (var i = 0; i < questions.length; i++) {
+      if (questionsBuffer.isNotEmpty) {
+        questionsBuffer.write('. ');
+        offset += 2;
+      }
+      final text = 'Pregunta ${i + 1}: ${questions[i]}';
+      final start = offset;
+      questionsBuffer.write(text);
+      offset += text.length;
+      questionRanges.add(_QuestionRange(start, offset));
+    }
+    final questionsText = questionsBuffer.toString();
+    return _QuestionsSpeech(
+      speechText: questionsText,
+      prefixLength: 0,
+      questionText: questionsText,
+      ranges: questionRanges,
+    );
   }
 
   Future<void> _toggleTts() async {
@@ -595,13 +914,20 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (_ttsPlaying && _ttsTarget != _TtsTarget.main) {
       await _stopTts();
     }
+    _resetTtsQueue();
+    final mainSpeech = _buildMainSpeech();
     final speechText =
-        _ttsSpeechText.isNotEmpty ? _ttsSpeechText : _buildSpeechText();
+        _ttsSpeechText.isNotEmpty ? _ttsSpeechText : mainSpeech.text;
     if (speechText.isEmpty) return;
     if (mounted) {
       setState(() {
         _ttsTarget = _TtsTarget.main;
         _ttsSpeechText = speechText;
+        _ttsQuestionsStartOffset = mainSpeech.questionsOffset;
+        _ttsQuestionsFromMainActive = false;
+        _ttsQuestionRanges = mainSpeech.questionRanges;
+        _ttsQuestionHighlightEnds =
+            List<int>.filled(mainSpeech.questionRanges.length, 0);
         if (!_ttsPaused) {
           _ttsHighlightStart = 0;
           _ttsMainHighlightEnd = 0;
@@ -609,7 +935,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         }
       });
     }
-    await _tts.speak(speechText);
+    await _startTtsSequence(speechText);
   }
 
   Future<void> _toggleIntroTts() async {
@@ -625,6 +951,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (_ttsPlaying && _ttsTarget != _TtsTarget.intro) {
       await _stopTts();
     }
+    _resetTtsQueue();
     final speechText = _ttsSpeechText.isNotEmpty
         ? _ttsSpeechText
         : _summaryIntro!.trim();
@@ -643,10 +970,46 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     await _tts.speak(speechText);
   }
 
+  Future<void> _toggleQuestionsTts() async {
+    if (!_ttsReady || _summaryQuestions.isEmpty) {
+      return;
+    }
+    if (_ttsPlaying &&
+        _ttsTarget == _TtsTarget.questions &&
+        !_ttsPaused) {
+      await _tts.pause();
+      return;
+    }
+    if (_ttsPlaying && _ttsTarget != _TtsTarget.questions) {
+      await _stopTts();
+    }
+    _resetTtsQueue();
+    final speech = _buildQuestionsSpeech();
+    final speechText =
+        _ttsSpeechText.isNotEmpty ? _ttsSpeechText : speech.speechText;
+    if (speechText.isEmpty) return;
+    if (mounted) {
+      setState(() {
+        _ttsTarget = _TtsTarget.questions;
+        _ttsSpeechText = speechText;
+        _ttsQuestionsText = speech.questionText;
+        _ttsQuestionsPrefixLength = speech.prefixLength;
+        _ttsQuestionRanges = speech.ranges;
+        if (!_ttsPaused) {
+          _ttsHighlightStart = 0;
+          _ttsQuestionHighlightEnds =
+              List<int>.filled(speech.ranges.length, 0);
+        }
+      });
+    }
+    await _tts.speak(speechText);
+  }
+
   Future<void> _stopTts() async {
     if (!_ttsReady) return;
     await _tts.stop();
     if (!mounted) return;
+    _resetTtsQueue();
     setState(() {
       _ttsPlaying = false;
       _ttsPaused = false;
@@ -654,12 +1017,24 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _ttsHighlightStart = 0;
       _ttsMainHighlightEnd = 0;
       _ttsIntroHighlightEnd = 0;
+      _ttsQuestionsText = '';
+      _ttsQuestionsPrefixLength = 0;
+      _ttsQuestionRanges = const [];
+      _ttsQuestionHighlightEnds = const [];
       _ttsSpeechText = '';
     });
   }
 
   Future<void> _openQuestion(String question) async {
-    final uri = Uri.parse('https://chatgpt.com/?prompt=${Uri.encodeComponent(question)}');
+    final trimmedQuestion = question.trim();
+    if (trimmedQuestion.isEmpty) return;
+    final summaryContext = (_summaryMain ?? '').trim();
+    final prompt = summaryContext.isNotEmpty
+        ? 'Contexto: $summaryContext\nAhora me gustaría reflexionar sobre: $trimmedQuestion'
+        : trimmedQuestion;
+    final uri = Uri.parse(
+      'https://chatgpt.com/?prompt=${Uri.encodeComponent(prompt)}',
+    );
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se pudo abrir el enlace.')));
@@ -671,28 +1046,48 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     debugPrint('[VideoDetail] $message');
   }
 
-  Widget _buildHighlightedText({
+  TextSpan _buildHighlightedSpan({
     required String text,
-    required TextStyle? style,
+    TextStyle? style,
     required int highlightEnd,
     required bool active,
   }) {
     if (!active || highlightEnd <= 0 || text.isEmpty) {
-      return Text(text, style: style);
+      return TextSpan(text: text, style: style);
     }
     final end = highlightEnd.clamp(0, text.length);
     if (end <= 0) {
-      return Text(text, style: style);
+      return TextSpan(text: text, style: style);
     }
-    final highlightStyle = (style ?? const TextStyle()).copyWith(color: const Color(0xFFFA1021));
-    return RichText(
-      text: TextSpan(
-        style: style,
-        children: [
-          TextSpan(text: text.substring(0, end), style: highlightStyle),
-          if (end < text.length) TextSpan(text: text.substring(end)),
-        ],
-      ),
+    final highlightStyle =
+        (style ?? const TextStyle()).copyWith(color: const Color(0xFFFA1021));
+    return TextSpan(
+      style: style,
+      children: [
+        TextSpan(text: text.substring(0, end), style: highlightStyle),
+        if (end < text.length) TextSpan(text: text.substring(end)),
+      ],
+    );
+  }
+
+  Widget _buildHighlightedText({
+    required String text,
+    TextStyle? style,
+    required int highlightEnd,
+    required bool active,
+    int? maxLines,
+    TextOverflow? overflow,
+  }) {
+    final span = _buildHighlightedSpan(
+      text: text,
+      style: style,
+      highlightEnd: highlightEnd,
+      active: active,
+    );
+    return Text.rich(
+      span,
+      maxLines: maxLines,
+      overflow: overflow,
     );
   }
 
@@ -767,10 +1162,14 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     final playerAspectRatio = playerWidth / playerHeight;
     final hasStructuredSummary = _summaryMain != null && _summaryMain!.isNotEmpty;
     final showGenerateSummary = !hasStructuredSummary && _summaryError == null;
-    final introActive =
-        _ttsTarget == _TtsTarget.intro && _ttsPlaying;
-    final mainActive =
-        _ttsTarget == _TtsTarget.main && _ttsPlaying;
+    final introActive = _ttsTarget == _TtsTarget.intro && _ttsPlaying;
+    final mainActive = _ttsTarget == _TtsTarget.main && _ttsPlaying;
+    final questionsActive =
+        _ttsTarget == _TtsTarget.questions && _ttsPlaying;
+    final questionsHighlightActive = _ttsPlaying &&
+        (_ttsTarget == _TtsTarget.questions ||
+            (_ttsTarget == _TtsTarget.main && _ttsQuestionsFromMainActive));
+    final visibleQuestions = _summaryQuestions.take(3).toList();
 
     return Scaffold(
       appBar: AppBar(title: Text(widget.video.channelTitle)),
@@ -838,6 +1237,29 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                   ),
                   const SizedBox(height: 16),
                 ],
+                Row(
+                  children: [
+                    InkWell(
+                      onTap: _openChannelVideos,
+                      borderRadius: BorderRadius.circular(28),
+                      child: ChannelAvatar(
+                        name: widget.video.channelTitle,
+                        imageUrl: _channelAvatarUrl,
+                        size: 44,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        widget.video.channelTitle,
+                        style: Theme.of(context).textTheme.titleMedium,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 Text(widget.video.title, style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 12),
                 LayoutBuilder(
@@ -949,14 +1371,57 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                       ],
                     ),
                     const SizedBox(height: 6),
-                    GestureDetector(
-                      onLongPress: () => _copyText(_summaryMain!),
-                      child: _buildHighlightedText(
-                        text: _summaryMain!,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        highlightEnd: _ttsMainHighlightEnd,
-                        active: mainActive,
-                      ),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final textStyle =
+                            Theme.of(context).textTheme.bodyMedium;
+                        final span = _buildHighlightedSpan(
+                          text: _summaryMain!,
+                          style: textStyle,
+                          highlightEnd: _ttsMainHighlightEnd,
+                          active: mainActive,
+                        );
+                        final painter = TextPainter(
+                          text: span,
+                          maxLines: _summaryPreviewLines,
+                          textDirection: Directionality.of(context),
+                        )..layout(maxWidth: constraints.maxWidth);
+                        final exceeds = painter.didExceedMaxLines;
+                        final showFull = _summaryMainExpanded || mainActive;
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            GestureDetector(
+                              onLongPress: () => _copyText(_summaryMain!),
+                              child: _buildHighlightedText(
+                                text: _summaryMain!,
+                                style: textStyle,
+                                highlightEnd: _ttsMainHighlightEnd,
+                                active: mainActive,
+                                maxLines:
+                                    showFull ? null : _summaryPreviewLines,
+                                overflow: showFull
+                                    ? TextOverflow.visible
+                                    : TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (exceeds || _summaryMainExpanded)
+                              TextButton(
+                                onPressed: mainActive
+                                    ? null
+                                    : () {
+                                        setState(() {
+                                          _summaryMainExpanded =
+                                              !_summaryMainExpanded;
+                                        });
+                                      },
+                                child: Text(_summaryMainExpanded
+                                    ? 'Ver menos'
+                                    : 'Ver más'),
+                              ),
+                          ],
+                        );
+                      },
                     ),
                   ] else if (_summary != null && _summaryIntro == null && _summaryMain == null)
                     SelectableText(_summary!)
@@ -977,12 +1442,53 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                     ),
                   if (_summaryQuestions.isNotEmpty) ...[
                     const SizedBox(height: 16),
-                    Text('Preguntas para profundizar', style: Theme.of(context).textTheme.titleSmall),
+                    Row(
+                      children: [
+                        Text('Preguntas para profundizar',
+                            style: Theme.of(context).textTheme.titleSmall),
+                        const Spacer(),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              onPressed: _ttsReady ? _toggleQuestionsTts : null,
+                              icon: Icon(
+                                questionsActive && !_ttsPaused
+                                    ? Icons.pause
+                                    : Icons.play_arrow,
+                              ),
+                              tooltip: questionsActive
+                                  ? (_ttsPaused
+                                      ? 'Reanudar audio'
+                                      : 'Pausar audio')
+                                  : 'Reproducir audio',
+                            ),
+                            IconButton(
+                              onPressed: _ttsReady && questionsActive
+                                  ? _stopTts
+                                  : null,
+                              icon: const Icon(Icons.stop),
+                              tooltip: 'Detener audio',
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 8),
-                    for (final question in _summaryQuestions.take(3).toList())
+                    for (var i = 0; i < visibleQuestions.length; i++)
                       TextButton(
-                        onPressed: () => _openQuestion(question),
-                        child: Align(alignment: Alignment.centerLeft, child: Text(question)),
+                        onPressed: () => _openQuestion(visibleQuestions[i]),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: _buildHighlightedText(
+                            text: visibleQuestions[i],
+                            highlightEnd: (questionsHighlightActive &&
+                                    i < _ttsQuestionHighlightEnds.length)
+                                ? _ttsQuestionHighlightEnds[i]
+                                : 0,
+                            active: questionsHighlightActive,
+                          ),
+                        ),
                       ),
                   ],
                 ] else ...[
@@ -1000,6 +1506,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                       items: _tracks.map((track) => DropdownMenuItem(value: track, child: Text(_formatTrackLabel(track)))).toList(),
                       onChanged: (value) {
                         if (value == null) return;
+                        _resetTtsQueue();
                         setState(() {
                           _activeTab = _SummaryTab.transcript;
                           _selectedTrack = value;
@@ -1014,6 +1521,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                           _summaryIntro = null;
                           _summaryMain = null;
                           _summaryQuestions = const [];
+                          _summaryMainExpanded = false;
                           _ttsPlaying = false;
                           _ttsPaused = false;
                           _ttsTarget = _TtsTarget.none;
@@ -1082,7 +1590,47 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
 enum _SummaryTab { summary, transcript }
 
-enum _TtsTarget { none, intro, main }
+enum _TtsTarget { none, intro, main, questions }
+
+class _QuestionRange {
+  const _QuestionRange(this.start, this.end);
+
+  final int start;
+  final int end;
+}
+
+class _QuestionsSpeech {
+  const _QuestionsSpeech({
+    required this.speechText,
+    required this.prefixLength,
+    required this.questionText,
+    required this.ranges,
+  });
+
+  final String speechText;
+  final int prefixLength;
+  final String questionText;
+  final List<_QuestionRange> ranges;
+}
+
+class _MainSpeech {
+  const _MainSpeech({
+    required this.text,
+    required this.questionsOffset,
+    required this.questionRanges,
+  });
+
+  final String text;
+  final int questionsOffset;
+  final List<_QuestionRange> questionRanges;
+}
+
+class _TtsChunk {
+  const _TtsChunk(this.text, this.offset);
+
+  final String text;
+  final int offset;
+}
 
 class _TabLabel extends StatelessWidget {
   const _TabLabel({required this.text, required this.loading});

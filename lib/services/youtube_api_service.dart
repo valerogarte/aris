@@ -9,6 +9,18 @@ import '../models/youtube_subscription.dart';
 import '../models/youtube_video.dart';
 import 'quota_tracker.dart';
 
+class YouTubeChannelVideosPage {
+  const YouTubeChannelVideosPage({
+    required this.videos,
+    required this.nextPageToken,
+    required this.uploadsPlaylistId,
+  });
+
+  final List<YouTubeVideo> videos;
+  final String? nextPageToken;
+  final String? uploadsPlaylistId;
+}
+
 class YouTubeApiService {
   YouTubeApiService({
     required this.accessToken,
@@ -123,6 +135,105 @@ class YouTubeApiService {
     }
 
     return result;
+  }
+
+  Future<YouTubeChannelVideosPage> fetchChannelUploads({
+    required String channelId,
+    String? uploadsPlaylistId,
+    String? pageToken,
+    int maxResults = 20,
+  }) async {
+    final trimmedId = channelId.trim();
+    if (trimmedId.isEmpty) {
+      return const YouTubeChannelVideosPage(
+        videos: <YouTubeVideo>[],
+        nextPageToken: null,
+        uploadsPlaylistId: null,
+      );
+    }
+
+    var playlistId = uploadsPlaylistId?.trim();
+    if (playlistId == null || playlistId.isEmpty) {
+      final data = await _get(
+        'channels',
+        {
+          'part': 'contentDetails',
+          'id': trimmedId,
+        },
+        units: _unitsDefault,
+        label: 'channels.list',
+      );
+      final items = (data['items'] as List?) ?? const [];
+      for (final item in items) {
+        final map = item as Map<String, dynamic>;
+        final details = map['contentDetails'] as Map<String, dynamic>?;
+        final related =
+            details?['relatedPlaylists'] as Map<String, dynamic>?;
+        final uploads = related?['uploads'] as String?;
+        if (uploads != null && uploads.isNotEmpty) {
+          playlistId = uploads;
+          break;
+        }
+      }
+    }
+
+    if (playlistId == null || playlistId.isEmpty) {
+      return const YouTubeChannelVideosPage(
+        videos: <YouTubeVideo>[],
+        nextPageToken: null,
+        uploadsPlaylistId: null,
+      );
+    }
+
+    final params = <String, String>{
+      'part': 'snippet',
+      'playlistId': playlistId,
+      'maxResults': maxResults.clamp(1, 50).toString(),
+    };
+    if (pageToken != null && pageToken.isNotEmpty) {
+      params['pageToken'] = pageToken;
+    }
+
+    final data = await _get(
+      'playlistItems',
+      params,
+      units: _unitsDefault,
+      label: 'playlistItems.list',
+    );
+
+    final items = (data['items'] as List?) ?? const [];
+    final ids = <String>[];
+    for (final item in items) {
+      final map = item as Map<String, dynamic>;
+      final snippet = map['snippet'] as Map<String, dynamic>?;
+      final resource = snippet?['resourceId'] as Map<String, dynamic>?;
+      final id = resource?['videoId'] as String?;
+      if (id != null && id.isNotEmpty) {
+        ids.add(id);
+      }
+    }
+    final durations = await _fetchVideoDurations(ids);
+    final now = DateTime.now().toUtc();
+    final videos = <YouTubeVideo>[];
+    for (final item in items) {
+      final map = item as Map<String, dynamic>;
+      final snippet = map['snippet'] as Map<String, dynamic>?;
+      final resource = snippet?['resourceId'] as Map<String, dynamic>?;
+      final id = resource?['videoId'] as String?;
+      if (id == null || id.isEmpty) continue;
+      final video =
+          YouTubeVideo.fromPlaylistItem(map, durationSeconds: durations[id]);
+      if (video.publishedAt.toUtc().isAfter(now)) {
+        continue;
+      }
+      videos.add(video);
+    }
+
+    return YouTubeChannelVideosPage(
+      videos: videos,
+      nextPageToken: data['nextPageToken'] as String?,
+      uploadsPlaylistId: playlistId,
+    );
   }
 
   Future<List<YouTubeSubscription>> fetchSubscriptions() async {

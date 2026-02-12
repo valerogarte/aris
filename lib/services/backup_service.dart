@@ -1,146 +1,11 @@
-import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-class BackupService {
-  static const int schemaVersion = 1;
-
-  static const List<String> _fixedKeys = [
-    'ai_provider_settings',
-    'sftp_settings',
-    'subscription_lists_state',
-    'youtube_quota_state',
-    'ai_cost_state',
-    'ai_cost_history',
-  ];
-
-  static const List<String> _prefixes = [
-    'expiring_cache:',
-  ];
-
-  Future<String> exportJson() async {
-    final prefs = await SharedPreferences.getInstance();
-    final keys = prefs.getKeys();
-    final data = <String, dynamic>{};
-
-    for (final key in keys) {
-      if (!_shouldIncludeKey(key)) continue;
-      final value = prefs.get(key);
-      final serialized = _serializeValue(value);
-      if (serialized != null) {
-        data[key] = serialized;
-      }
-    }
-
-    final payload = {
-      'version': schemaVersion,
-      'exportedAt': DateTime.now().toIso8601String(),
-      'preferences': data,
-    };
-
-    return jsonEncode(payload);
-  }
-
-  Future<void> importJson(String json) async {
-    final decoded = jsonDecode(json) as Map<String, dynamic>;
-    final prefsData =
-        (decoded['preferences'] as Map<String, dynamic>?) ?? {};
-
-    final prefs = await SharedPreferences.getInstance();
-    final keys = prefs.getKeys();
-    for (final key in keys) {
-      if (_shouldIncludeKey(key)) {
-        await prefs.remove(key);
-      }
-    }
-
-    for (final entry in prefsData.entries) {
-      final key = entry.key;
-      if (!_shouldIncludeKey(key)) continue;
-      final value = entry.value as Map<String, dynamic>?;
-      if (value == null) continue;
-      await _restoreValue(prefs, key, value);
-    }
-  }
-
-  bool _shouldIncludeKey(String key) {
-    if (_fixedKeys.contains(key)) return true;
-    for (final prefix in _prefixes) {
-      if (key.startsWith(prefix)) return true;
-    }
-    return false;
-  }
-
-  Map<String, dynamic>? _serializeValue(Object? value) {
-    if (value == null) return null;
-    if (value is String) {
-      return {'type': 'string', 'value': value};
-    }
-    if (value is int) {
-      return {'type': 'int', 'value': value};
-    }
-    if (value is double) {
-      return {'type': 'double', 'value': value};
-    }
-    if (value is bool) {
-      return {'type': 'bool', 'value': value};
-    }
-    if (value is List<String>) {
-      return {'type': 'string_list', 'value': value};
-    }
-    return null;
-  }
-
-  Future<void> _restoreValue(
-    SharedPreferences prefs,
-    String key,
-    Map<String, dynamic> data,
-  ) async {
-    final type = data['type'] as String?;
-    final value = data['value'];
-    switch (type) {
-      case 'string':
-        if (value is String) {
-          await prefs.setString(key, value);
-        } else if (value is Map || value is List || value is num || value is bool) {
-          await prefs.setString(key, jsonEncode(value));
-        } else if (value != null) {
-          await prefs.setString(key, value.toString());
-        }
-        break;
-      case 'int':
-        if (value is int) {
-          await prefs.setInt(key, value);
-        }
-        break;
-      case 'double':
-        if (value is num) {
-          await prefs.setDouble(key, value.toDouble());
-        }
-        break;
-      case 'bool':
-        if (value is bool) {
-          await prefs.setBool(key, value);
-        }
-        break;
-      case 'string_list':
-        if (value is List) {
-          final list = value.whereType<String>().toList();
-          await prefs.setStringList(key, list);
-        }
-        break;
-    }
-  }
-}
+import '../storage/app_database.dart';
 
 class SftpBackupService {
-  SftpBackupService({BackupService? backupService})
-      : _backupService = backupService ?? BackupService();
-
-  final BackupService _backupService;
-
   Future<List<String>> listBackupFiles({
     required String host,
     required int port,
@@ -204,8 +69,8 @@ class SftpBackupService {
     required String password,
     required String remotePath,
   }) async {
-    final json = await _backupService.exportJson();
-    final path = _resolveRemotePath(remotePath);
+    final path = _resolveRemotePath(remotePath, ensureDb: true);
+    final bytes = await _readDatabaseBytes();
 
     final socket = await SSHSocket.connect(host, port);
     final client = SSHClient(
@@ -221,7 +86,6 @@ class SftpBackupService {
             SftpFileOpenMode.truncate |
             SftpFileOpenMode.write,
       );
-      final bytes = Uint8List.fromList(utf8.encode(json));
       await file.writeBytes(bytes);
       await file.close();
     } finally {
@@ -236,7 +100,7 @@ class SftpBackupService {
     required String password,
     required String remotePath,
   }) async {
-    final path = _resolveRemotePath(remotePath);
+    final path = _resolveRemotePath(remotePath, ensureDb: true);
     final socket = await SSHSocket.connect(host, port);
     final client = SSHClient(
       socket,
@@ -251,18 +115,20 @@ class SftpBackupService {
       );
       final bytes = await file.readBytes();
       await file.close();
-      final json = utf8.decode(bytes);
-      await _backupService.importJson(json);
+      await _writeDatabaseBytes(bytes);
     } finally {
       client.close();
     }
   }
 
-  String _resolveRemotePath(String path) {
+  String _resolveRemotePath(String path, {required bool ensureDb}) {
     final trimmed = path.trim();
     if (trimmed.isEmpty || trimmed.endsWith('/')) {
       final name = _defaultFileName();
       return trimmed.isEmpty ? name : '$trimmed$name';
+    }
+    if (ensureDb && trimmed.toLowerCase().endsWith('.json')) {
+      throw StateError('Solo se permiten backups .db');
     }
     return trimmed;
   }
@@ -306,6 +172,44 @@ class SftpBackupService {
       now.hour.toString().padLeft(2, '0'),
       now.minute.toString().padLeft(2, '0'),
     ].join('');
-    return 'aris_backup_$stamp.json';
+    return 'aris_backup_$stamp.db';
+  }
+
+  Future<Uint8List> _readDatabaseBytes() async {
+    final db = AppDatabase.instance;
+    await db.keys();
+    await db.checkpoint();
+    try {
+      await db.close();
+    } catch (_) {
+      // Ignore close errors to avoid breaking export.
+    }
+    final dbPath = await db.databasePath();
+    final file = File(dbPath);
+    if (!await file.exists()) {
+      throw StateError('No se encontró la base de datos en $dbPath');
+    }
+    return await file.readAsBytes();
+  }
+
+  Future<void> _writeDatabaseBytes(Uint8List bytes) async {
+    final db = AppDatabase.instance;
+    await db.close();
+    final dbPath = await db.databasePath();
+    final file = File(dbPath);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes, flush: true);
+    await _cleanupWalFiles(dbPath);
+  }
+
+  Future<void> _cleanupWalFiles(String dbPath) async {
+    final wal = File('$dbPath-wal');
+    if (await wal.exists()) {
+      await wal.delete();
+    }
+    final shm = File('$dbPath-shm');
+    if (await shm.exists()) {
+      await shm.delete();
+    }
   }
 }

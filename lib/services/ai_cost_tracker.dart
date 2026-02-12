@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '../storage/app_database.dart';
 
 class AiCostTracker extends ChangeNotifier {
   AiCostTracker({this.currencySymbol = '€'});
@@ -29,9 +29,8 @@ class AiCostTracker extends ChangeNotifier {
 
   Future<void> load() async {
     if (_loaded) return;
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_storageKey);
-    final historyRaw = prefs.getString(_historyKey);
+    final raw = await AppDatabase.instance.getString(_storageKey);
+    final historyRaw = await AppDatabase.instance.getString(_historyKey);
     final today = _todayKey();
 
     _history = _decodeHistory(historyRaw);
@@ -143,14 +142,19 @@ class AiCostTracker extends ChangeNotifier {
   }
 
   Future<void> _save() async {
-    final prefs = await SharedPreferences.getInstance();
     final data = {
       'date': _dateKey,
       'microCost': _microCost,
       'breakdown': _breakdown,
     };
-    await prefs.setString(_storageKey, jsonEncode(data));
-    await prefs.setString(_historyKey, jsonEncode(_encodeHistory()));
+    await AppDatabase.instance.setString(
+      _storageKey,
+      jsonEncode(data),
+    );
+    await AppDatabase.instance.setString(
+      _historyKey,
+      jsonEncode(_encodeHistory()),
+    );
   }
 
   static String _todayKey() {

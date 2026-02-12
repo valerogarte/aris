@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'app_database.dart';
 
 class AiProviderSettings {
   AiProviderSettings({
@@ -66,8 +66,7 @@ class AiSettingsStore {
   static const String _storageKey = 'ai_provider_settings';
 
   Future<AiProviderSettings> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_storageKey);
+    final raw = await AppDatabase.instance.getString(_storageKey);
     if (raw == null || raw.isEmpty) {
       return AiProviderSettings.defaults();
     }
@@ -80,7 +79,9 @@ class AiSettingsStore {
   }
 
   Future<void> save(AiProviderSettings settings) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_storageKey, jsonEncode(settings.toJson()));
+    await AppDatabase.instance.setString(
+      _storageKey,
+      jsonEncode(settings.toJson()),
+    );
   }
 }
