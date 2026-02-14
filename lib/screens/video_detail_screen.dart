@@ -59,14 +59,7 @@ String formatRelativeTime(DateTime date) {
 }
 
 class VideoDetailScreen extends StatefulWidget {
-  const VideoDetailScreen({
-    super.key,
-    required this.video,
-    required this.accessToken,
-    this.channelAvatarUrl = '',
-    this.quotaTracker,
-    this.aiCostTracker,
-  });
+  const VideoDetailScreen({super.key, required this.video, required this.accessToken, this.channelAvatarUrl = '', this.quotaTracker, this.aiCostTracker});
 
   final YouTubeVideo video;
   final String accessToken;
@@ -79,7 +72,7 @@ class VideoDetailScreen extends StatefulWidget {
 }
 
 class _VideoDetailScreenState extends State<VideoDetailScreen> {
-  static const Duration _cacheTtl = Duration(days: 2);
+  static const Duration _cacheTtl = Duration(days: 365);
   static const int _summaryPreviewLines = 10;
   static const int _ttsChunkLimit = 1000;
   static final Map<String, Future<String?>> _summaryJobs = {};
@@ -90,8 +83,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   final AiSettingsStore _aiSettingsStore = AiSettingsStore();
   late final ExpiringCacheStore _transcriptCache;
   late final ExpiringCacheStore _summaryCache;
-  final ExpiringCacheStore _avatarCache =
-      ExpiringCacheStore('channel_avatars');
+  final ExpiringCacheStore _avatarCache = ExpiringCacheStore('channel_avatars');
   final HistoryStore _historyStore = HistoryStore();
   YoutubePlayerController? _playerController;
   Timer? _playerTimeout;
@@ -145,10 +137,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   void initState() {
     super.initState();
     _transcripts = YouTubeTranscriptService();
-    _api = YouTubeApiService(
-      accessToken: widget.accessToken,
-      quotaTracker: widget.quotaTracker,
-    );
+    _api = YouTubeApiService(accessToken: widget.accessToken, quotaTracker: widget.quotaTracker);
     _tts = FlutterTts();
     _configureTts();
     _transcriptCache = ExpiringCacheStore('transcripts');
@@ -264,21 +253,12 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   void _openChannelVideos() {
     final channelId = widget.video.channelId.trim();
     if (channelId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se encontró el canal.')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se encontró el canal.')));
       return;
     }
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ChannelVideosScreen(
-          accessToken: widget.accessToken,
-          channelId: channelId,
-          channelTitle: widget.video.channelTitle,
-          channelAvatarUrl: _channelAvatarUrl,
-          quotaTracker: widget.quotaTracker,
-          aiCostTracker: widget.aiCostTracker,
-        ),
+        builder: (_) => ChannelVideosScreen(accessToken: widget.accessToken, channelId: channelId, channelTitle: widget.video.channelTitle, channelAvatarUrl: _channelAvatarUrl, quotaTracker: widget.quotaTracker, aiCostTracker: widget.aiCostTracker),
       ),
     );
   }
@@ -346,10 +326,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
       final trackKey = _trackCacheKey(_selectedTrack!);
       _log('transcript: trackKey=$trackKey');
-      await _loadSummaryFromCache(
-        trackKey: trackKey,
-        allowFallback: !_userSelectedTrack,
-      );
+      await _loadSummaryFromCache(trackKey: trackKey, allowFallback: !_userSelectedTrack);
       if (!force && (_summary ?? '').trim().isNotEmpty) {
         _log('transcript: skipped (summary cached)');
         return;
@@ -371,15 +348,11 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         await _transcriptCache.set(transcriptKey, text, _cacheTtl);
         _log('transcript: cached key=$transcriptKey');
       }
-
     } catch (error) {
       if (!mounted) return;
       if (_selectedTrack != null) {
         final trackKey = _trackCacheKey(_selectedTrack!);
-        await _loadSummaryFromCache(
-          trackKey: trackKey,
-          allowFallback: !_userSelectedTrack,
-        );
+        await _loadSummaryFromCache(trackKey: trackKey, allowFallback: !_userSelectedTrack);
       }
       if (!mounted) return;
       setState(() {
@@ -427,9 +400,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       }
       if (targetText == null || targetText.isEmpty) return;
       var baseOffset = 0;
-      if (_ttsSequenceActive &&
-          _ttsTarget == _TtsTarget.main &&
-          _ttsChunkText.isNotEmpty) {
+      if (_ttsSequenceActive && _ttsTarget == _TtsTarget.main && _ttsChunkText.isNotEmpty) {
         baseOffset = _ttsChunkOffset;
       } else if (_ttsSpeechText.isNotEmpty && text != _ttsSpeechText) {
         if (_ttsSpeechText.endsWith(text)) {
@@ -447,10 +418,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       final safeStart = start.clamp(0, text.length);
       final safeEnd = end.clamp(0, text.length);
       final progressIndex = safeStart;
-      final speechLen =
-          (_ttsTarget == _TtsTarget.main && _ttsSpeechText.isNotEmpty)
-              ? _ttsSpeechText.length
-              : targetLen;
+      final speechLen = (_ttsTarget == _TtsTarget.main && _ttsSpeechText.isNotEmpty) ? _ttsSpeechText.length : targetLen;
       final speechEnd = (baseOffset + progressIndex).clamp(0, speechLen);
       final mappedEnd = _mapNormalizedSpeechEnd(speechEnd);
       final highlightStart = (baseOffset + safeStart).clamp(0, targetLen);
@@ -458,15 +426,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       setState(() {
         _ttsHighlightStart = highlightStart;
         if (_ttsTarget == _TtsTarget.intro) {
-          _ttsIntroHighlightEnd = highlightEnd > _ttsIntroHighlightEnd
-              ? highlightEnd
-              : _ttsIntroHighlightEnd;
+          _ttsIntroHighlightEnd = highlightEnd > _ttsIntroHighlightEnd ? highlightEnd : _ttsIntroHighlightEnd;
         } else if (_ttsTarget == _TtsTarget.main) {
-          _ttsMainHighlightEnd = highlightEnd > _ttsMainHighlightEnd
-              ? highlightEnd
-              : _ttsMainHighlightEnd;
-          if (_ttsQuestionsStartOffset > 0 &&
-              _ttsQuestionRanges.isNotEmpty) {
+          _ttsMainHighlightEnd = highlightEnd > _ttsMainHighlightEnd ? highlightEnd : _ttsMainHighlightEnd;
+          if (_ttsQuestionsStartOffset > 0 && _ttsQuestionRanges.isNotEmpty) {
             final relativeEnd = mappedEnd - _ttsQuestionsStartOffset;
             _ttsQuestionsFromMainActive = relativeEnd > 0;
             if (relativeEnd > 0) {
@@ -476,8 +439,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                 if (relativeEnd <= range.start) {
                   continue;
                 }
-                final clamped =
-                    (relativeEnd.clamp(range.start, range.end)) - range.start;
+                final clamped = (relativeEnd.clamp(range.start, range.end)) - range.start;
                 if (i < updated.length && clamped > updated[i]) {
                   updated[i] = clamped;
                 }
@@ -496,8 +458,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
             if (relativeEnd <= range.start) {
               continue;
             }
-            final clamped =
-                (relativeEnd.clamp(range.start, range.end)) - range.start;
+            final clamped = (relativeEnd.clamp(range.start, range.end)) - range.start;
             if (i < updated.length && clamped > updated[i]) {
               updated[i] = clamped;
             }
@@ -576,38 +537,27 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     }
   }
 
-  Future<void> _loadSummaryFromCache({
-    required String trackKey,
-    bool allowFallback = true,
-  }) async {
+  Future<void> _loadSummaryFromCache({required String trackKey, bool allowFallback = true}) async {
     final settings = await _aiSettingsStore.load();
     if (!mounted) return;
-    final summaryKey =
-        '${settings.provider}:${settings.model}:${widget.video.id}:$trackKey';
+    final summaryKey = '${settings.provider}:${settings.model}:${widget.video.id}:$trackKey';
     final cachedSummary = await _summaryCache.get(summaryKey);
     if (!mounted) return;
     if (cachedSummary != null && cachedSummary.isNotEmpty) {
       _applySummary(cachedSummary);
-      _log(
-        'summary: cache hit key=$summaryKey len=${cachedSummary.length}',
-      );
+      _log('summary: cache hit key=$summaryKey len=${cachedSummary.length}');
       return;
     }
     if (allowFallback) {
-      final fallbackKey =
-          '${settings.provider}:${settings.model}:${widget.video.id}';
+      final fallbackKey = '${settings.provider}:${settings.model}:${widget.video.id}';
       final fallbackSummary = await _summaryCache.get(fallbackKey);
       if (!mounted) return;
       if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
         _applySummary(fallbackSummary);
-        _log(
-          'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
-        );
+        _log('summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}');
         return;
       }
-      _log(
-        'summary: cache miss (video) key=$fallbackKey',
-      );
+      _log('summary: cache miss (video) key=$fallbackKey');
     }
     final inFlight = _summaryJobs[summaryKey];
     if (inFlight != null) {
@@ -630,16 +580,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (_userSelectedTrack) return;
     final settings = await _aiSettingsStore.load();
     if (!mounted) return;
-    final summaryKey =
-        '${settings.provider}:${settings.model}:${widget.video.id}';
+    final summaryKey = '${settings.provider}:${settings.model}:${widget.video.id}';
     final cachedSummary = await _summaryCache.get(summaryKey);
     if (!mounted) return;
     if (cachedSummary != null && cachedSummary.isNotEmpty) {
       _applySummary(cachedSummary);
     }
-    _log(cachedSummary == null
-        ? 'summary: cache miss (video) key=$summaryKey'
-        : 'summary: cache hit (video) key=$summaryKey len=${cachedSummary.length}');
+    _log(cachedSummary == null ? 'summary: cache miss (video) key=$summaryKey' : 'summary: cache hit (video) key=$summaryKey len=${cachedSummary.length}');
   }
 
   String _formatSummaryError(Object error) {
@@ -656,8 +603,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if ((_summary ?? '').trim().isNotEmpty) return;
     final settings = await _aiSettingsStore.load();
     if (!mounted) return;
-    final fallbackKey =
-        '${settings.provider}:${settings.model}:${widget.video.id}';
+    final fallbackKey = '${settings.provider}:${settings.model}:${widget.video.id}';
     final future = _summaryVideoJobs[fallbackKey];
     if (future == null) return;
     setState(() {
@@ -671,39 +617,37 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   void _trackSummaryFuture(Future<String?> future) {
     if (_attachedSummaryFuture == future) return;
     _attachedSummaryFuture = future;
-    future.then((summary) {
-      if (!mounted || _attachedSummaryFuture != future) return;
-      _attachedSummaryFuture = null;
-      if (summary != null && summary.isNotEmpty) {
-        setState(() {
-          _loadingSummary = false;
-          _summaryRequested = false;
+    future
+        .then((summary) {
+          if (!mounted || _attachedSummaryFuture != future) return;
+          _attachedSummaryFuture = null;
+          if (summary != null && summary.isNotEmpty) {
+            setState(() {
+              _loadingSummary = false;
+              _summaryRequested = false;
+            });
+            _applySummary(summary);
+          } else {
+            setState(() {
+              _summaryError = 'No se pudo generar el resumen.';
+              _loadingSummary = false;
+              _summaryRequested = false;
+            });
+          }
+        })
+        .catchError((error) {
+          _log('summary: error $error');
+          if (!mounted || _attachedSummaryFuture != future) return;
+          _attachedSummaryFuture = null;
+          setState(() {
+            _summaryError = 'No se pudo generar el resumen.\n${_formatSummaryError(error)}';
+            _loadingSummary = false;
+            _summaryRequested = false;
+          });
         });
-        _applySummary(summary);
-      } else {
-        setState(() {
-          _summaryError = 'No se pudo generar el resumen.';
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
-      }
-    }).catchError((error) {
-      _log('summary: error $error');
-      if (!mounted || _attachedSummaryFuture != future) return;
-      _attachedSummaryFuture = null;
-      setState(() {
-        _summaryError =
-            'No se pudo generar el resumen.\n${_formatSummaryError(error)}';
-        _loadingSummary = false;
-        _summaryRequested = false;
-      });
-    });
   }
 
-  Future<String?> _ensureSummaryCached({
-    YouTubeCaptionTrack? preferredTrack,
-    String? transcript,
-  }) async {
+  Future<String?> _ensureSummaryCached({YouTubeCaptionTrack? preferredTrack, String? transcript}) async {
     if (widget.video.id.isEmpty) {
       throw Exception('No se encontró el vídeo.');
     }
@@ -715,21 +659,17 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       throw Exception('Selecciona un modelo en el perfil.');
     }
 
-    final fallbackKey =
-        '${settings.provider}:${settings.model}:${widget.video.id}';
+    final fallbackKey = '${settings.provider}:${settings.model}:${widget.video.id}';
     var track = preferredTrack;
     if (track == null || track.id.isEmpty) {
       final transcriptService = YouTubeTranscriptService();
       try {
-        final tracks =
-            await transcriptService.fetchCaptionTracks(widget.video.id);
+        final tracks = await transcriptService.fetchCaptionTracks(widget.video.id);
         track = _pickDefaultTrack(tracks);
       } catch (error) {
         final fallbackSummary = await _summaryCache.get(fallbackKey);
         if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
-          _log(
-            'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
-          );
+          _log('summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}');
           return fallbackSummary;
         }
         rethrow;
@@ -740,17 +680,14 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (track == null) {
       final fallbackSummary = await _summaryCache.get(fallbackKey);
       if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
-        _log(
-          'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
-        );
+        _log('summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}');
         return fallbackSummary;
       }
       throw Exception('No hay transcripciones disponibles para este vídeo.');
     }
 
     final trackKey = _trackCacheKey(track);
-    final summaryKey =
-        '${settings.provider}:${settings.model}:${widget.video.id}:$trackKey';
+    final summaryKey = '${settings.provider}:${settings.model}:${widget.video.id}:$trackKey';
     final cachedSummary = await _summaryCache.get(summaryKey);
     if (cachedSummary != null && cachedSummary.isNotEmpty) {
       _log('summary: cache hit key=$summaryKey len=${cachedSummary.length}');
@@ -758,9 +695,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     }
     final fallbackSummary = await _summaryCache.get(fallbackKey);
     if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
-      _log(
-        'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
-      );
+      _log('summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}');
       return fallbackSummary;
     }
 
@@ -771,14 +706,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       return await existing;
     }
 
-    final future = _runSummaryJob(
-      settings: settings,
-      track: track,
-      trackKey: trackKey,
-      summaryKey: summaryKey,
-      fallbackKey: fallbackKey,
-      transcript: transcript,
-    );
+    final future = _runSummaryJob(settings: settings, track: track, trackKey: trackKey, summaryKey: summaryKey, fallbackKey: fallbackKey, transcript: transcript);
     _summaryJobs[summaryKey] = future;
     _summaryVideoJobs[fallbackKey] = future;
     try {
@@ -793,14 +721,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     }
   }
 
-  Future<String?> _runSummaryJob({
-    required AiProviderSettings settings,
-    required YouTubeCaptionTrack track,
-    required String trackKey,
-    required String summaryKey,
-    required String fallbackKey,
-    String? transcript,
-  }) async {
+  Future<String?> _runSummaryJob({required AiProviderSettings settings, required YouTubeCaptionTrack track, required String trackKey, required String summaryKey, required String fallbackKey, String? transcript}) async {
     final transcriptService = YouTubeTranscriptService();
     final aiService = AiSummaryService(costTracker: widget.aiCostTracker);
     try {
@@ -817,23 +738,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       if (text.isEmpty) {
         throw Exception('No hay texto para resumir.');
       }
-      if ((cachedTranscript == null || cachedTranscript.isEmpty) &&
-          text.isNotEmpty) {
+      if ((cachedTranscript == null || cachedTranscript.isEmpty) && text.isNotEmpty) {
         await _transcriptCache.set(transcriptKey, text, _cacheTtl);
         _log('transcript: cached key=$transcriptKey');
       }
 
-      _log(
-        'summary: calling provider=${settings.provider} model=${settings.model}',
-      );
-      final summary = await aiService.summarize(
-        provider: settings.provider,
-        model: settings.model,
-        apiKey: settings.apiKey,
-        transcript: text,
-        title: widget.video.title,
-        channel: widget.video.channelTitle,
-      );
+      _log('summary: calling provider=${settings.provider} model=${settings.model}');
+      final summary = await aiService.summarize(provider: settings.provider, model: settings.model, apiKey: settings.apiKey, transcript: text, title: widget.video.title, channel: widget.video.channelTitle);
       if (summary.isNotEmpty) {
         await _summaryCache.set(summaryKey, summary, _cacheTtl);
         await _summaryCache.set(fallbackKey, summary, _cacheTtl);
@@ -864,10 +775,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _loadingSummary = true;
     });
     _log('summary: generate requested');
-    final future = _ensureSummaryCached(
-      preferredTrack: _selectedTrack,
-      transcript: _transcript,
-    );
+    final future = _ensureSummaryCached(preferredTrack: _selectedTrack, transcript: _transcript);
     _trackSummaryFuture(future);
   }
 
@@ -921,11 +829,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   _MainSpeech _buildMainSpeech() {
     final main = _summaryMain?.trim() ?? '';
     if (main.isEmpty) {
-      return const _MainSpeech(
-        text: '',
-        questionsOffset: 0,
-        questionRanges: <_QuestionRange>[],
-      );
+      return const _MainSpeech(text: '', questionsOffset: 0, questionRanges: <_QuestionRange>[]);
     }
     final buffer = StringBuffer(main);
     final questions = _summaryQuestions.take(3).toList();
@@ -939,17 +843,9 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       final questionsOffset = buffer.length;
       final questionsSpeech = _buildQuestionsSpeech();
       buffer.write(questionsSpeech.questionText);
-      return _MainSpeech(
-        text: buffer.toString(),
-        questionsOffset: questionsOffset,
-        questionRanges: questionsSpeech.ranges,
-      );
+      return _MainSpeech(text: buffer.toString(), questionsOffset: questionsOffset, questionRanges: questionsSpeech.ranges);
     }
-    return _MainSpeech(
-      text: buffer.toString(),
-      questionsOffset: 0,
-      questionRanges: const <_QuestionRange>[],
-    );
+    return _MainSpeech(text: buffer.toString(), questionsOffset: 0, questionRanges: const <_QuestionRange>[]);
   }
 
   void _resetTtsQueueOnly() {
@@ -977,8 +873,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         index++;
       }
       if (index >= length) break;
-      final maxEnd =
-          (index + _ttsChunkLimit < length) ? index + _ttsChunkLimit : length;
+      final maxEnd = (index + _ttsChunkLimit < length) ? index + _ttsChunkLimit : length;
       var breakPos = maxEnd;
       if (maxEnd < length) {
         final slice = text.substring(index, maxEnd);
@@ -1033,12 +928,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   _QuestionsSpeech _buildQuestionsSpeech() {
     final questions = _summaryQuestions.take(3).toList();
     if (questions.isEmpty) {
-      return const _QuestionsSpeech(
-        speechText: '',
-        prefixLength: 0,
-        questionText: '',
-        ranges: <_QuestionRange>[],
-      );
+      return const _QuestionsSpeech(speechText: '', prefixLength: 0, questionText: '', ranges: <_QuestionRange>[]);
     }
     final questionRanges = <_QuestionRange>[];
     final questionsBuffer = StringBuffer();
@@ -1056,19 +946,12 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       questionRanges.add(_QuestionRange(start, offset));
     }
     final questionsText = questionsBuffer.toString();
-    return _QuestionsSpeech(
-      speechText: questionsText,
-      prefixLength: 0,
-      questionText: questionsText,
-      ranges: questionRanges,
-    );
+    return _QuestionsSpeech(speechText: questionsText, prefixLength: 0, questionText: questionsText, ranges: questionRanges);
   }
 
   Future<void> _toggleTts() async {
     if (!_ttsReady || _summaryMain == null || _summaryMain!.isEmpty) return;
-    if (_ttsPlaying &&
-        _ttsTarget == _TtsTarget.main &&
-        !_ttsPaused) {
+    if (_ttsPlaying && _ttsTarget == _TtsTarget.main && !_ttsPaused) {
       await _tts.pause();
       return;
     }
@@ -1086,8 +969,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _ttsQuestionsStartOffset = mainSpeech.questionsOffset;
         _ttsQuestionsFromMainActive = false;
         _ttsQuestionRanges = mainSpeech.questionRanges;
-        _ttsQuestionHighlightEnds =
-            List<int>.filled(mainSpeech.questionRanges.length, 0);
+        _ttsQuestionHighlightEnds = List<int>.filled(mainSpeech.questionRanges.length, 0);
         if (!_ttsPaused) {
           _ttsHighlightStart = 0;
           _ttsMainHighlightEnd = 0;
@@ -1102,9 +984,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (!_ttsReady || _summaryIntro == null || _summaryIntro!.isEmpty) {
       return;
     }
-    if (_ttsPlaying &&
-        _ttsTarget == _TtsTarget.intro &&
-        !_ttsPaused) {
+    if (_ttsPlaying && _ttsTarget == _TtsTarget.intro && !_ttsPaused) {
       await _tts.pause();
       return;
     }
@@ -1132,9 +1012,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (!_ttsReady || _summaryQuestions.isEmpty) {
       return;
     }
-    if (_ttsPlaying &&
-        _ttsTarget == _TtsTarget.questions &&
-        !_ttsPaused) {
+    if (_ttsPlaying && _ttsTarget == _TtsTarget.questions && !_ttsPaused) {
       await _tts.pause();
       return;
     }
@@ -1154,8 +1032,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _ttsQuestionRanges = speech.ranges;
         if (!_ttsPaused) {
           _ttsHighlightStart = 0;
-          _ttsQuestionHighlightEnds =
-              List<int>.filled(speech.ranges.length, 0);
+          _ttsQuestionHighlightEnds = List<int>.filled(speech.ranges.length, 0);
         }
       });
     }
@@ -1235,12 +1112,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     final trimmedQuestion = question.trim();
     if (trimmedQuestion.isEmpty) return;
     final summaryContext = (_summaryMain ?? '').trim();
-    final prompt = summaryContext.isNotEmpty
-        ? 'Contexto: $summaryContext\nAhora me gustaría reflexionar sobre: $trimmedQuestion'
-        : trimmedQuestion;
-    final uri = Uri.parse(
-      'https://chatgpt.com/?prompt=${Uri.encodeComponent(prompt)}',
-    );
+    final prompt = summaryContext.isNotEmpty ? 'Contexto: $summaryContext\nAhora me gustaría reflexionar sobre: $trimmedQuestion' : trimmedQuestion;
+    final uri = Uri.parse('https://chatgpt.com/?prompt=${Uri.encodeComponent(prompt)}');
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se pudo abrir el enlace.')));
@@ -1252,12 +1125,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     debugPrint('[VideoDetail] $message');
   }
 
-  TextSpan _buildHighlightedSpan({
-    required String text,
-    TextStyle? style,
-    required int highlightEnd,
-    required bool active,
-  }) {
+  TextSpan _buildHighlightedSpan({required String text, TextStyle? style, required int highlightEnd, required bool active}) {
     if (!active || highlightEnd <= 0 || text.isEmpty) {
       return TextSpan(text: text, style: style);
     }
@@ -1265,8 +1133,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (end <= 0) {
       return TextSpan(text: text, style: style);
     }
-    final highlightStyle =
-        (style ?? const TextStyle()).copyWith(color: const Color(0xFFFA1021));
+    final highlightStyle = (style ?? const TextStyle()).copyWith(color: const Color(0xFFFA1021));
     return TextSpan(
       style: style,
       children: [
@@ -1276,25 +1143,9 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     );
   }
 
-  Widget _buildHighlightedText({
-    required String text,
-    TextStyle? style,
-    required int highlightEnd,
-    required bool active,
-    int? maxLines,
-    TextOverflow? overflow,
-  }) {
-    final span = _buildHighlightedSpan(
-      text: text,
-      style: style,
-      highlightEnd: highlightEnd,
-      active: active,
-    );
-    return Text.rich(
-      span,
-      maxLines: maxLines,
-      overflow: overflow,
-    );
+  Widget _buildHighlightedText({required String text, TextStyle? style, required int highlightEnd, required bool active, int? maxLines, TextOverflow? overflow}) {
+    final span = _buildHighlightedSpan(text: text, style: style, highlightEnd: highlightEnd, active: active);
+    return Text.rich(span, maxLines: maxLines, overflow: overflow);
   }
 
   void _copyText(String text) {
@@ -1333,27 +1184,18 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     final hasMain = _summaryMain != null && _summaryMain!.isNotEmpty;
     final hasRaw = _summary != null && _summary!.trim().isNotEmpty;
     final summaryAvailable = hasRaw || hasIntro || hasMain;
-    final showGeneratingSummary =
-        _loadingSummary && !summaryAvailable && _summaryError == null;
-    final showGenerateSummary =
-        !summaryAvailable && _summaryError == null && !_loadingSummary;
-    final preparingContext = !summaryAvailable &&
-        (_loadingTranscript || _loadingTracks) &&
-        _summaryError == null;
+    final showGeneratingSummary = _loadingSummary && !summaryAvailable && _summaryError == null;
+    final showGenerateSummary = !summaryAvailable && _summaryError == null && !_loadingSummary;
+    final preparingContext = !summaryAvailable && (_loadingTranscript || _loadingTracks) && _summaryError == null;
+    final hasTranscriptError = _error != null && _error!.isNotEmpty;
+    final canGenerate = !hasTranscriptError;
     final introActive = _ttsTarget == _TtsTarget.intro && _ttsPlaying;
     final mainActive = _ttsTarget == _TtsTarget.main && _ttsPlaying;
-    final questionsActive =
-        _ttsTarget == _TtsTarget.questions && _ttsPlaying;
-    final questionsHighlightActive = _ttsPlaying &&
-        (_ttsTarget == _TtsTarget.questions ||
-            (_ttsTarget == _TtsTarget.main && _ttsQuestionsFromMainActive));
+    final questionsActive = _ttsTarget == _TtsTarget.questions && _ttsPlaying;
+    final questionsHighlightActive = _ttsPlaying && (_ttsTarget == _TtsTarget.questions || (_ttsTarget == _TtsTarget.main && _ttsQuestionsFromMainActive));
     final visibleQuestions = _summaryQuestions.take(3).toList();
 
-    Widget summaryBlock({
-      required String title,
-      required Widget child,
-      Widget? trailing,
-    }) {
+    Widget summaryBlock({required String title, required Widget child, Widget? trailing}) {
       final titleStyle = Theme.of(context).textTheme.titleSmall;
       return Container(
         padding: const EdgeInsets.all(12),
@@ -1369,8 +1211,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               children: [
                 Text(
                   title,
-                  style: titleStyle?.copyWith(fontWeight: FontWeight.w600) ??
-                      const TextStyle(fontWeight: FontWeight.w600),
+                  style: titleStyle?.copyWith(fontWeight: FontWeight.w600) ?? const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 if (trailing != null) trailing,
@@ -1386,20 +1227,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF1C1C1C), Color(0xFF0F0F0F)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        gradient: const LinearGradient(colors: [Color(0xFF1C1C1C), Color(0xFF0F0F0F)], begin: Alignment.topLeft, end: Alignment.bottomRight),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: const Color(0xFF2A2A2A)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.25),
-            blurRadius: 18,
-            offset: const Offset(0, 10),
-          ),
-        ],
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.25), blurRadius: 18, offset: const Offset(0, 10))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1409,99 +1240,45 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               Container(
                 width: 6,
                 height: 28,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFA1021),
-                  borderRadius: BorderRadius.circular(4),
-                ),
+                decoration: BoxDecoration(color: const Color(0xFFFA1021), borderRadius: BorderRadius.circular(4)),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  'Resumen IA',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w700),
-                ),
+                child: Text('Resumen IA', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
               ),
-              TextButton.icon(
-                onPressed: summaryAvailable ||
-                        (_summaryError != null && _summaryError!.isNotEmpty)
-                    ? _copySummary
-                    : null,
-                icon: const Icon(Icons.copy),
-                label: const Text('Copy All'),
-              ),
+              TextButton.icon(onPressed: summaryAvailable || (_summaryError != null && _summaryError!.isNotEmpty) ? _copySummary : null, icon: const Icon(Icons.copy), label: const Text('Copy All')),
             ],
           ),
           const SizedBox(height: 12),
           if (showGeneratingSummary)
             Row(
               children: [
-                const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
+                const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
                 const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Se está generando el resumen',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ),
+                Expanded(child: Text('Se está generando el resumen', style: Theme.of(context).textTheme.bodyMedium)),
               ],
             )
           else if (showGenerateSummary) ...[
-            Text(
-              'Genera un resumen claro, ideas clave y preguntas de seguimiento.',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: Colors.white70),
-            ),
+            Text('Genera un resumen claro, ideas clave y preguntas de seguimiento.', style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70)),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: _requestSummaryGeneration,
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFFFA1021),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                ),
+                onPressed: canGenerate ? _requestSummaryGeneration : null,
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFFFA1021), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 12)),
                 icon: const Icon(Icons.auto_fix_high),
                 label: const Text('Generar'),
               ),
             ),
-            if (_aiModelLabel.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                'Modelo: $_aiModelLabel',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: Colors.white54),
-              ),
-            ],
+            if (_aiModelLabel.isNotEmpty) ...[const SizedBox(height: 6), Text('Modelo: $_aiModelLabel', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white54))],
             if (preparingContext) ...[
               const SizedBox(height: 10),
               Row(
                 children: [
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
+                  const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      'Preparando la transcripción para dar contexto a la IA.',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(color: Colors.white70),
-                    ),
+                    child: Text('Preparando la transcripción para dar contexto a la IA.', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70)),
                   ),
                 ],
               ),
@@ -1509,61 +1286,31 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               const SizedBox(height: 10),
               Row(
                 children: [
-                  const Icon(
-                    Icons.check_circle,
-                    color: Color(0xFF3DDC84),
-                    size: 16,
-                  ),
+                  const Icon(Icons.check_circle, color: Color(0xFFFA1021), size: 16),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      'Transcripción generada.',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(color: Colors.white70),
-                    ),
+                    child: Text('Transcripción generada.', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70)),
                   ),
                 ],
               ),
-            ] else if (_error != null && _error!.isNotEmpty) ...[
+            ] else if (hasTranscriptError) ...[
               const SizedBox(height: 10),
-              Text(
-                _error!,
-                style:
-                    TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
+              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
             ],
           ] else if (_summaryError != null) ...[
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Theme.of(context)
-                    .colorScheme
-                    .errorContainer
-                    .withOpacity(0.2),
+                color: Theme.of(context).colorScheme.errorContainer.withOpacity(0.2),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color:
-                      Theme.of(context).colorScheme.error.withOpacity(0.6),
-                ),
+                border: Border.all(color: Theme.of(context).colorScheme.error.withOpacity(0.6)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    _summaryError!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
+                  Text(_summaryError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                   const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed:
-                        _loadingSummary ? null : _requestSummaryGeneration,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Reintentar'),
-                  ),
+                  OutlinedButton.icon(onPressed: _loadingSummary ? null : _requestSummaryGeneration, icon: const Icon(Icons.refresh), label: const Text('Reintentar')),
                 ],
               ),
             ),
@@ -1574,32 +1321,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      onPressed: _ttsReady ? _toggleIntroTts : null,
-                      icon: Icon(
-                        introActive && !_ttsPaused
-                            ? Icons.pause
-                            : Icons.play_arrow,
-                      ),
-                      tooltip: introActive
-                          ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio')
-                          : 'Reproducir audio',
-                    ),
-                    IconButton(
-                      onPressed: _ttsReady && introActive ? _stopTts : null,
-                      icon: const Icon(Icons.stop),
-                      tooltip: 'Detener audio',
-                    ),
+                    IconButton(onPressed: _ttsReady ? _toggleIntroTts : null, icon: Icon(introActive && !_ttsPaused ? Icons.pause : Icons.play_arrow), tooltip: introActive ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio') : 'Reproducir audio'),
+                    IconButton(onPressed: _ttsReady && introActive ? _stopTts : null, icon: const Icon(Icons.stop), tooltip: 'Detener audio'),
                   ],
                 ),
                 child: GestureDetector(
                   onLongPress: () => _copyText(_summaryIntro!),
-                  child: _buildHighlightedText(
-                    text: _summaryIntro!,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                    highlightEnd: _ttsIntroHighlightEnd,
-                    active: introActive,
-                  ),
+                  child: _buildHighlightedText(text: _summaryIntro!, style: Theme.of(context).textTheme.bodyMedium, highlightEnd: _ttsIntroHighlightEnd, active: introActive),
                 ),
               ),
               const SizedBox(height: 12),
@@ -1610,38 +1338,15 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      onPressed: _ttsReady ? _toggleTts : null,
-                      icon: Icon(
-                        mainActive && !_ttsPaused
-                            ? Icons.pause
-                            : Icons.play_arrow,
-                      ),
-                      tooltip: mainActive
-                          ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio')
-                          : 'Reproducir audio',
-                    ),
-                    IconButton(
-                      onPressed: _ttsReady && mainActive ? _stopTts : null,
-                      icon: const Icon(Icons.stop),
-                      tooltip: 'Detener audio',
-                    ),
+                    IconButton(onPressed: _ttsReady ? _toggleTts : null, icon: Icon(mainActive && !_ttsPaused ? Icons.pause : Icons.play_arrow), tooltip: mainActive ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio') : 'Reproducir audio'),
+                    IconButton(onPressed: _ttsReady && mainActive ? _stopTts : null, icon: const Icon(Icons.stop), tooltip: 'Detener audio'),
                   ],
                 ),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final textStyle = Theme.of(context).textTheme.bodyMedium;
-                    final span = _buildHighlightedSpan(
-                      text: _summaryMain!,
-                      style: textStyle,
-                      highlightEnd: _ttsMainHighlightEnd,
-                      active: mainActive,
-                    );
-                    final painter = TextPainter(
-                      text: span,
-                      maxLines: _summaryPreviewLines,
-                      textDirection: Directionality.of(context),
-                    )..layout(maxWidth: constraints.maxWidth);
+                    final span = _buildHighlightedSpan(text: _summaryMain!, style: textStyle, highlightEnd: _ttsMainHighlightEnd, active: mainActive);
+                    final painter = TextPainter(text: span, maxLines: _summaryPreviewLines, textDirection: Directionality.of(context))..layout(maxWidth: constraints.maxWidth);
                     final exceeds = painter.didExceedMaxLines;
                     final showFull = _summaryMainExpanded || mainActive;
                     return Column(
@@ -1655,9 +1360,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                             highlightEnd: _ttsMainHighlightEnd,
                             active: mainActive,
                             maxLines: showFull ? null : _summaryPreviewLines,
-                            overflow: showFull
-                                ? TextOverflow.visible
-                                : TextOverflow.ellipsis,
+                            overflow: showFull ? TextOverflow.visible : TextOverflow.ellipsis,
                           ),
                         ),
                         if (exceeds || _summaryMainExpanded)
@@ -1666,12 +1369,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                                 ? null
                                 : () {
                                     setState(() {
-                                      _summaryMainExpanded =
-                                          !_summaryMainExpanded;
+                                      _summaryMainExpanded = !_summaryMainExpanded;
                                     });
                                   },
-                            child:
-                                Text(_summaryMainExpanded ? 'Ver menos' : 'Ver más'),
+                            child: Text(_summaryMainExpanded ? 'Ver menos' : 'Ver más'),
                           ),
                       ],
                     );
@@ -1680,13 +1381,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               ),
               const SizedBox(height: 12),
             ],
-            if (!hasMain && !hasIntro && hasRaw) ...[
-              summaryBlock(
-                title: 'Resumen completo',
-                child: SelectableText(_summary!),
-              ),
-              if (_summaryQuestions.isNotEmpty) const SizedBox(height: 12),
-            ],
+            if (!hasMain && !hasIntro && hasRaw) ...[summaryBlock(title: 'Resumen completo', child: SelectableText(_summary!)), if (_summaryQuestions.isNotEmpty) const SizedBox(height: 12)],
             if (_summaryQuestions.isNotEmpty) ...[
               summaryBlock(
                 title: 'Preguntas para profundizar',
@@ -1695,21 +1390,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                   children: [
                     IconButton(
                       onPressed: _ttsReady ? _toggleQuestionsTts : null,
-                      icon: Icon(
-                        questionsActive && !_ttsPaused
-                            ? Icons.pause
-                            : Icons.play_arrow,
-                      ),
-                      tooltip: questionsActive
-                          ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio')
-                          : 'Reproducir audio',
+                      icon: Icon(questionsActive && !_ttsPaused ? Icons.pause : Icons.play_arrow),
+                      tooltip: questionsActive ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio') : 'Reproducir audio',
                     ),
-                    IconButton(
-                      onPressed:
-                          _ttsReady && questionsActive ? _stopTts : null,
-                      icon: const Icon(Icons.stop),
-                      tooltip: 'Detener audio',
-                    ),
+                    IconButton(onPressed: _ttsReady && questionsActive ? _stopTts : null, icon: const Icon(Icons.stop), tooltip: 'Detener audio'),
                   ],
                 ),
                 child: Column(
@@ -1719,18 +1403,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                       if (i > 0) const SizedBox(height: 8),
                       TextButton(
                         onPressed: () => _openQuestion(visibleQuestions[i]),
-                        style: TextButton.styleFrom(
-                          padding: EdgeInsets.zero,
-                          alignment: Alignment.centerLeft,
-                        ),
-                        child: _buildHighlightedText(
-                          text: visibleQuestions[i],
-                          highlightEnd: (questionsHighlightActive &&
-                                  i < _ttsQuestionHighlightEnds.length)
-                              ? _ttsQuestionHighlightEnds[i]
-                              : 0,
-                          active: questionsHighlightActive,
-                        ),
+                        style: TextButton.styleFrom(padding: EdgeInsets.zero, alignment: Alignment.centerLeft),
+                        child: _buildHighlightedText(text: visibleQuestions[i], highlightEnd: (questionsHighlightActive && i < _ttsQuestionHighlightEnds.length) ? _ttsQuestionHighlightEnds[i] : 0, active: questionsHighlightActive),
                       ),
                     ],
                   ],
@@ -1747,14 +1421,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
     final theme = Theme.of(context);
-    final subtitleStyle = theme.textTheme.bodySmall?.copyWith(
-      color: Colors.white70,
-    );
-    final hasSummaryIndicator =
-        (_summary != null && _summary!.trim().isNotEmpty) ||
-        (_summaryMain != null && _summaryMain!.isNotEmpty) ||
-        (_summaryIntro != null && _summaryIntro!.isNotEmpty) ||
-        _summaryQuestions.isNotEmpty;
+    final subtitleStyle = theme.textTheme.bodySmall?.copyWith(color: Colors.white70);
+    final hasSummaryIndicator = (_summary != null && _summary!.trim().isNotEmpty) || (_summaryMain != null && _summaryMain!.isNotEmpty) || (_summaryIntro != null && _summaryIntro!.isNotEmpty) || _summaryQuestions.isNotEmpty;
     final screenSize = mediaQuery.size;
     final playerWidth = screenSize.width;
     final targetHeight = playerWidth * 9 / 16;
@@ -1824,18 +1492,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                           InkWell(
                             onTap: _openChannelVideos,
                             customBorder: const CircleBorder(),
-                            child: ChannelAvatar(
-                              name: widget.video.channelTitle,
-                              imageUrl: _channelAvatarUrl,
-                            ),
+                            child: ChannelAvatar(name: widget.video.channelTitle, imageUrl: _channelAvatarUrl),
                           ),
                           const SizedBox(height: 6),
-                          if (hasSummaryIndicator)
-                            const Icon(
-                              Icons.auto_fix_high,
-                              color: Color(0xFFFA1021),
-                              size: 16,
-                            ),
+                          if (hasSummaryIndicator) const Icon(Icons.auto_fix_high, color: Color(0xFFFA1021), size: 16),
                         ],
                       ),
                       const SizedBox(width: 12),
@@ -1847,27 +1507,15 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                               widget.video.title,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyLarge?.copyWith(
-                                color: Colors.white,
-                                height: 1.3,
-                              ),
+                              style: theme.textTheme.bodyLarge?.copyWith(color: Colors.white, height: 1.3),
                             ),
                             const SizedBox(height: 6),
-                            Text(
-                              '${widget.video.channelTitle} • ${formatRelativeTime(widget.video.publishedAt)}',
-                              style: subtitleStyle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                            Text('${widget.video.channelTitle} • ${formatRelativeTime(widget.video.publishedAt)}', style: subtitleStyle, maxLines: 1, overflow: TextOverflow.ellipsis),
                           ],
                         ),
                       ),
                       const SizedBox(width: 8),
-                      const Icon(
-                        Icons.more_vert,
-                        color: Colors.white54,
-                        size: 20,
-                      ),
+                      const Icon(Icons.more_vert, color: Colors.white54, size: 20),
                     ],
                   ),
                 ),
@@ -1898,12 +1546,7 @@ class _NormalizedText {
 }
 
 class _QuestionsSpeech {
-  const _QuestionsSpeech({
-    required this.speechText,
-    required this.prefixLength,
-    required this.questionText,
-    required this.ranges,
-  });
+  const _QuestionsSpeech({required this.speechText, required this.prefixLength, required this.questionText, required this.ranges});
 
   final String speechText;
   final int prefixLength;
@@ -1912,11 +1555,7 @@ class _QuestionsSpeech {
 }
 
 class _MainSpeech {
-  const _MainSpeech({
-    required this.text,
-    required this.questionsOffset,
-    required this.questionRanges,
-  });
+  const _MainSpeech({required this.text, required this.questionsOffset, required this.questionRanges});
 
   final String text;
   final int questionsOffset;
@@ -1929,4 +1568,3 @@ class _TtsChunk {
   final String text;
   final int offset;
 }
-
