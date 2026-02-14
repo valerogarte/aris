@@ -535,7 +535,7 @@ class _VideoCard extends StatelessWidget {
                   const SizedBox(height: 6),
                   if (hasSummary)
                     const Icon(
-                      Icons.check_circle,
+                      Icons.auto_fix_high,
                       color: Color(0xFFFA1021),
                       size: 16,
                     ),

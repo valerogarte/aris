@@ -46,6 +46,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   static const int _summaryPreviewLines = 10;
   static const int _ttsChunkLimit = 1000;
   static final Map<String, Future<String?>> _summaryJobs = {};
+  static final Map<String, Future<String?>> _summaryVideoJobs = {};
 
   late final YouTubeTranscriptService _transcripts;
   late final YouTubeApiService _api;
@@ -71,6 +72,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   bool _loadingTranscript = false;
   bool _loadingSummary = false;
   bool _summaryRequested = false;
+  Future<String?>? _attachedSummaryFuture;
   late final FlutterTts _tts;
   bool _ttsReady = false;
   bool _ttsPlaying = false;
@@ -100,8 +102,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   String _channelAvatarUrl = '';
   bool _loadingChannelAvatar = false;
   bool _summaryMainExpanded = false;
-  bool _transcriptExpanded = false;
-  _SummaryTab _activeTab = _SummaryTab.summary;
 
   @override
   void initState() {
@@ -121,6 +121,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     _loadChannelAvatar();
     _loadSummaryFromVideoCache();
     _ensureTranscriptLoaded();
+    _attachPendingSummaryJob();
   }
 
   @override
@@ -281,7 +282,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     }
   }
 
-  Future<void> _ensureTranscriptLoaded() async {
+  Future<void> _ensureTranscriptLoaded({bool force = false}) async {
     if (_loadingTranscript || widget.video.id.isEmpty) return;
     setState(() {
       _loadingTranscript = true;
@@ -291,6 +292,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
     try {
       await _loadSummaryFromVideoCache();
+      if (!force && (_summary ?? '').trim().isNotEmpty) {
+        _log('transcript: skipped (summary cached)');
+        return;
+      }
       await _loadTracksIfNeeded(silent: true);
       if (!mounted) return;
       if (_selectedTrack == null) {
@@ -307,6 +312,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         trackKey: trackKey,
         allowFallback: !_userSelectedTrack,
       );
+      if (!force && (_summary ?? '').trim().isNotEmpty) {
+        _log('transcript: skipped (summary cached)');
+        return;
+      }
 
       final transcriptKey = '${widget.video.id}:$trackKey';
       final cachedTranscript = await _transcriptCache.get(transcriptKey);
@@ -560,6 +569,18 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         'summary: cache miss (video) key=$fallbackKey',
       );
     }
+    final inFlight = _summaryJobs[summaryKey];
+    if (inFlight != null) {
+      setState(() {
+        _loadingSummary = true;
+        _summaryRequested = true;
+        _summaryError = null;
+      });
+      _applySummary(null);
+      _trackSummaryFuture(inFlight);
+      _log('summary: in-flight key=$summaryKey');
+      return;
+    }
     _applySummary(null);
     _log('summary: cache miss key=$summaryKey');
   }
@@ -588,6 +609,55 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       return raw.substring(prefix.length);
     }
     return raw;
+  }
+
+  Future<void> _attachPendingSummaryJob() async {
+    if (_loadingSummary || _summaryRequested) return;
+    if ((_summary ?? '').trim().isNotEmpty) return;
+    final settings = await _aiSettingsStore.load();
+    if (!mounted) return;
+    final fallbackKey =
+        '${settings.provider}:${settings.model}:${widget.video.id}';
+    final future = _summaryVideoJobs[fallbackKey];
+    if (future == null) return;
+    setState(() {
+      _loadingSummary = true;
+      _summaryRequested = true;
+      _summaryError = null;
+    });
+    _trackSummaryFuture(future);
+  }
+
+  void _trackSummaryFuture(Future<String?> future) {
+    if (_attachedSummaryFuture == future) return;
+    _attachedSummaryFuture = future;
+    future.then((summary) {
+      if (!mounted || _attachedSummaryFuture != future) return;
+      _attachedSummaryFuture = null;
+      if (summary != null && summary.isNotEmpty) {
+        setState(() {
+          _loadingSummary = false;
+          _summaryRequested = false;
+        });
+        _applySummary(summary);
+      } else {
+        setState(() {
+          _summaryError = 'No se pudo generar el resumen.';
+          _loadingSummary = false;
+          _summaryRequested = false;
+        });
+      }
+    }).catchError((error) {
+      _log('summary: error $error');
+      if (!mounted || _attachedSummaryFuture != future) return;
+      _attachedSummaryFuture = null;
+      setState(() {
+        _summaryError =
+            'No se pudo generar el resumen.\n${_formatSummaryError(error)}';
+        _loadingSummary = false;
+        _summaryRequested = false;
+      });
+    });
   }
 
   Future<String?> _ensureSummaryCached({
@@ -656,6 +726,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
     final existing = _summaryJobs[summaryKey];
     if (existing != null) {
+      _summaryVideoJobs[fallbackKey] = existing;
       _log('summary: waiting existing job key=$summaryKey');
       return await existing;
     }
@@ -669,10 +740,16 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       transcript: transcript,
     );
     _summaryJobs[summaryKey] = future;
+    _summaryVideoJobs[fallbackKey] = future;
     try {
       return await future;
     } finally {
-      _summaryJobs.remove(summaryKey);
+      if (_summaryJobs[summaryKey] == future) {
+        _summaryJobs.remove(summaryKey);
+      }
+      if (_summaryVideoJobs[fallbackKey] == future) {
+        _summaryVideoJobs.remove(fallbackKey);
+      }
     }
   }
 
@@ -745,33 +822,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _summaryQuestions = const [];
       _summaryMainExpanded = false;
       _loadingSummary = true;
-      _activeTab = _SummaryTab.summary;
     });
     _log('summary: generate requested');
-    _ensureSummaryCached(
+    final future = _ensureSummaryCached(
       preferredTrack: _selectedTrack,
       transcript: _transcript,
-    ).then((summary) {
-      if (!mounted) return;
-      setState(() {
-        _loadingSummary = false;
-        _summaryRequested = false;
-      });
-      if (summary != null && summary.isNotEmpty) {
-        _applySummary(summary);
-      } else {
-        _summaryError = 'No se pudo generar el resumen.';
-      }
-    }).catchError((error) {
-      _log('summary: error $error');
-      if (!mounted) return;
-      setState(() {
-        _summaryError =
-            'No se pudo generar el resumen.\n${_formatSummaryError(error)}';
-        _loadingSummary = false;
-        _summaryRequested = false;
-      });
-    });
+    );
+    _trackSummaryFuture(future);
   }
 
   void _applySummary(String? raw) {
@@ -1207,16 +1264,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copiado al portapapeles.')));
   }
 
-  void _copyTranscript() {
-    final text = (_transcript != null && _transcript!.isNotEmpty)
-        ? _transcript!
-        : (_error != null && _error!.isNotEmpty)
-        ? _error!
-        : null;
-    if (text == null || text.isEmpty) return;
-    _copyText(text);
-  }
-
   void _copySummary() {
     final text = (_summary != null && _summary!.isNotEmpty)
         ? _summary!
@@ -1233,12 +1280,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     return spanish;
   }
 
-  String _formatTrackLabel(YouTubeCaptionTrack track) {
-    final autoLabel = track.isAutoGenerated ? ' (auto)' : '';
-    final name = track.name.isNotEmpty ? ' • ${track.name}' : '';
-    return '${track.language}$autoLabel$name';
-  }
-
   String _trackCacheKey(YouTubeCaptionTrack track) {
     final language = track.language.trim().toLowerCase();
     final kind = track.isAutoGenerated ? 'asr' : 'manual';
@@ -1247,18 +1288,388 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     return stableHash(raw);
   }
 
-  String? _formatDuration(int? seconds) {
-    if (seconds == null || seconds <= 0) return null;
-    final total = seconds;
-    final hours = total ~/ 3600;
-    final minutes = (total % 3600) ~/ 60;
-    final secs = total % 60;
-    final mm = minutes.toString().padLeft(2, '0');
-    final ss = secs.toString().padLeft(2, '0');
-    if (hours > 0) {
-      return '$hours:$mm:$ss';
+  Widget _buildSummarySection(BuildContext context) {
+    final hasIntro = _summaryIntro != null && _summaryIntro!.isNotEmpty;
+    final hasMain = _summaryMain != null && _summaryMain!.isNotEmpty;
+    final hasRaw = _summary != null && _summary!.trim().isNotEmpty;
+    final summaryAvailable = hasRaw || hasIntro || hasMain;
+    final showGeneratingSummary =
+        _loadingSummary && !summaryAvailable && _summaryError == null;
+    final showGenerateSummary =
+        !summaryAvailable && _summaryError == null && !_loadingSummary;
+    final preparingContext = !summaryAvailable &&
+        (_loadingTranscript || _loadingTracks) &&
+        _summaryError == null;
+    final introActive = _ttsTarget == _TtsTarget.intro && _ttsPlaying;
+    final mainActive = _ttsTarget == _TtsTarget.main && _ttsPlaying;
+    final questionsActive =
+        _ttsTarget == _TtsTarget.questions && _ttsPlaying;
+    final questionsHighlightActive = _ttsPlaying &&
+        (_ttsTarget == _TtsTarget.questions ||
+            (_ttsTarget == _TtsTarget.main && _ttsQuestionsFromMainActive));
+    final visibleQuestions = _summaryQuestions.take(3).toList();
+
+    Widget summaryBlock({
+      required String title,
+      required Widget child,
+      Widget? trailing,
+    }) {
+      final titleStyle = Theme.of(context).textTheme.titleSmall;
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF151515),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF262626)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  title,
+                  style: titleStyle?.copyWith(fontWeight: FontWeight.w600) ??
+                      const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                if (trailing != null) trailing,
+              ],
+            ),
+            const SizedBox(height: 6),
+            child,
+          ],
+        ),
+      );
     }
-    return '$minutes:$ss';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF1C1C1C), Color(0xFF0F0F0F)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFF2A2A2A)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.25),
+            blurRadius: 18,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 6,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFA1021),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Resumen IA',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: summaryAvailable ||
+                        (_summaryError != null && _summaryError!.isNotEmpty)
+                    ? _copySummary
+                    : null,
+                icon: const Icon(Icons.copy),
+                label: const Text('Copy All'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (showGeneratingSummary)
+            Row(
+              children: [
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Se está generando el resumen',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            )
+          else if (showGenerateSummary) ...[
+            Text(
+              'Genera un resumen claro, ideas clave y preguntas de seguimiento.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: Colors.white70),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _requestSummaryGeneration,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFA1021),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const Icon(Icons.auto_fix_high),
+                label: const Text('Generar'),
+              ),
+            ),
+            if (preparingContext) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Preparando la transcripción para dar contexto a la IA.',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: Colors.white70),
+                    ),
+                  ),
+                ],
+              ),
+            ] else if (_error != null && _error!.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                _error!,
+                style:
+                    TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ] else if (_summaryError != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context)
+                    .colorScheme
+                    .errorContainer
+                    .withOpacity(0.2),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color:
+                      Theme.of(context).colorScheme.error.withOpacity(0.6),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _summaryError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed:
+                        _loadingSummary ? null : _requestSummaryGeneration,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Reintentar'),
+                  ),
+                ],
+              ),
+            ),
+          ] else ...[
+            if (hasIntro) ...[
+              summaryBlock(
+                title: 'Resumen inicial',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      onPressed: _ttsReady ? _toggleIntroTts : null,
+                      icon: Icon(
+                        introActive && !_ttsPaused
+                            ? Icons.pause
+                            : Icons.play_arrow,
+                      ),
+                      tooltip: introActive
+                          ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio')
+                          : 'Reproducir audio',
+                    ),
+                    IconButton(
+                      onPressed: _ttsReady && introActive ? _stopTts : null,
+                      icon: const Icon(Icons.stop),
+                      tooltip: 'Detener audio',
+                    ),
+                  ],
+                ),
+                child: GestureDetector(
+                  onLongPress: () => _copyText(_summaryIntro!),
+                  child: _buildHighlightedText(
+                    text: _summaryIntro!,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    highlightEnd: _ttsIntroHighlightEnd,
+                    active: introActive,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            if (hasMain) ...[
+              summaryBlock(
+                title: 'Contenido principal',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      onPressed: _ttsReady ? _toggleTts : null,
+                      icon: Icon(
+                        mainActive && !_ttsPaused
+                            ? Icons.pause
+                            : Icons.play_arrow,
+                      ),
+                      tooltip: mainActive
+                          ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio')
+                          : 'Reproducir audio',
+                    ),
+                    IconButton(
+                      onPressed: _ttsReady && mainActive ? _stopTts : null,
+                      icon: const Icon(Icons.stop),
+                      tooltip: 'Detener audio',
+                    ),
+                  ],
+                ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final textStyle = Theme.of(context).textTheme.bodyMedium;
+                    final span = _buildHighlightedSpan(
+                      text: _summaryMain!,
+                      style: textStyle,
+                      highlightEnd: _ttsMainHighlightEnd,
+                      active: mainActive,
+                    );
+                    final painter = TextPainter(
+                      text: span,
+                      maxLines: _summaryPreviewLines,
+                      textDirection: Directionality.of(context),
+                    )..layout(maxWidth: constraints.maxWidth);
+                    final exceeds = painter.didExceedMaxLines;
+                    final showFull = _summaryMainExpanded || mainActive;
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        GestureDetector(
+                          onLongPress: () => _copyText(_summaryMain!),
+                          child: _buildHighlightedText(
+                            text: _summaryMain!,
+                            style: textStyle,
+                            highlightEnd: _ttsMainHighlightEnd,
+                            active: mainActive,
+                            maxLines: showFull ? null : _summaryPreviewLines,
+                            overflow: showFull
+                                ? TextOverflow.visible
+                                : TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (exceeds || _summaryMainExpanded)
+                          TextButton(
+                            onPressed: mainActive
+                                ? null
+                                : () {
+                                    setState(() {
+                                      _summaryMainExpanded =
+                                          !_summaryMainExpanded;
+                                    });
+                                  },
+                            child:
+                                Text(_summaryMainExpanded ? 'Ver menos' : 'Ver más'),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            if (!hasMain && !hasIntro && hasRaw) ...[
+              summaryBlock(
+                title: 'Resumen completo',
+                child: SelectableText(_summary!),
+              ),
+              if (_summaryQuestions.isNotEmpty) const SizedBox(height: 12),
+            ],
+            if (_summaryQuestions.isNotEmpty) ...[
+              summaryBlock(
+                title: 'Preguntas para profundizar',
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      onPressed: _ttsReady ? _toggleQuestionsTts : null,
+                      icon: Icon(
+                        questionsActive && !_ttsPaused
+                            ? Icons.pause
+                            : Icons.play_arrow,
+                      ),
+                      tooltip: questionsActive
+                          ? (_ttsPaused ? 'Reanudar audio' : 'Pausar audio')
+                          : 'Reproducir audio',
+                    ),
+                    IconButton(
+                      onPressed:
+                          _ttsReady && questionsActive ? _stopTts : null,
+                      icon: const Icon(Icons.stop),
+                      tooltip: 'Detener audio',
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (var i = 0; i < visibleQuestions.length; i++) ...[
+                      if (i > 0) const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: () => _openQuestion(visibleQuestions[i]),
+                        style: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          alignment: Alignment.centerLeft,
+                        ),
+                        child: _buildHighlightedText(
+                          text: visibleQuestions[i],
+                          highlightEnd: (questionsHighlightActive &&
+                                  i < _ttsQuestionHighlightEnds.length)
+                              ? _ttsQuestionHighlightEnds[i]
+                              : 0,
+                          active: questionsHighlightActive,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
   }
 
   @override
@@ -1269,16 +1680,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     final targetHeight = playerWidth * 9 / 16;
     final playerHeight = targetHeight > screenSize.height ? screenSize.height : targetHeight;
     final playerAspectRatio = playerWidth / playerHeight;
-    final hasStructuredSummary = _summaryMain != null && _summaryMain!.isNotEmpty;
-    final showGenerateSummary = !hasStructuredSummary && _summaryError == null;
-    final introActive = _ttsTarget == _TtsTarget.intro && _ttsPlaying;
-    final mainActive = _ttsTarget == _TtsTarget.main && _ttsPlaying;
-    final questionsActive =
-        _ttsTarget == _TtsTarget.questions && _ttsPlaying;
-    final questionsHighlightActive = _ttsPlaying &&
-        (_ttsTarget == _TtsTarget.questions ||
-            (_ttsTarget == _TtsTarget.main && _ttsQuestionsFromMainActive));
-    final visibleQuestions = _summaryQuestions.take(3).toList();
 
     return Scaffold(
       appBar: AppBar(title: Text(widget.video.channelTitle)),
@@ -1295,19 +1696,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                       ? YoutubePlayer(controller: _playerController!, showVideoProgressIndicator: true, aspectRatio: playerAspectRatio, onReady: _handlePlayerReady)
                       : Container(alignment: Alignment.center, color: Colors.black12, child: const Text('Vídeo no disponible')),
                 ),
-                if (_formatDuration(widget.video.durationSeconds) != null)
-                  Positioned(
-                    right: 8,
-                    bottom: 8,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(color: const Color(0xB8000000), borderRadius: BorderRadius.circular(6)),
-                      child: Text(
-                        _formatDuration(widget.video.durationSeconds)!,
-                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ),
               ],
             ),
           ),
@@ -1370,326 +1758,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(widget.video.title, style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 12),
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final fullWidth = constraints.maxWidth;
-                    const borderWidth = 1.0;
-                    final buttonWidth = (fullWidth - borderWidth * 3) / 2;
-                    final summaryLoading = _loadingSummary;
-                    final transcriptLoading = _loadingTranscript || _loadingTracks;
-                    return ToggleButtons(
-                      isSelected: [_activeTab == _SummaryTab.summary, _activeTab == _SummaryTab.transcript],
-                      onPressed: (index) {
-                        final nextTab = index == 0 ? _SummaryTab.summary : _SummaryTab.transcript;
-                        if (nextTab == _activeTab) return;
-                        setState(() {
-                          _activeTab = nextTab;
-                        });
-                      },
-                      borderRadius: BorderRadius.circular(10),
-                      borderWidth: borderWidth,
-                      constraints: BoxConstraints.tightFor(width: buttonWidth, height: 40),
-                      children: [
-                        _TabLabel(text: 'Resumen IA', loading: summaryLoading),
-                        _TabLabel(text: 'Transcripción', loading: transcriptLoading),
-                      ],
-                    );
-                  },
-                ),
                 const SizedBox(height: 16),
-                if (_activeTab == _SummaryTab.summary) ...[
-                  Row(
-                    children: [
-                      Text('Resumen IA', style: Theme.of(context).textTheme.titleMedium),
-                      const Spacer(),
-                      TextButton.icon(onPressed: (_summary != null && _summary!.isNotEmpty) || (_summaryError != null && _summaryError!.isNotEmpty) ? _copySummary : null, icon: const Icon(Icons.copy), label: const Text('Copy All')),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  if (_summaryIntro != null && _summaryIntro!.isNotEmpty) ...[
-                    Row(
-                      children: [
-                        Text('Resumen inicial', style: Theme.of(context).textTheme.titleSmall),
-                        const Spacer(),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              onPressed: _ttsReady ? _toggleIntroTts : null,
-                              icon: Icon(
-                                introActive && !_ttsPaused
-                                    ? Icons.pause
-                                    : Icons.play_arrow,
-                              ),
-                              tooltip: introActive
-                                  ? (_ttsPaused
-                                      ? 'Reanudar audio'
-                                      : 'Pausar audio')
-                                  : 'Reproducir audio',
-                            ),
-                            IconButton(
-                              onPressed:
-                                  _ttsReady && introActive ? _stopTts : null,
-                              icon: const Icon(Icons.stop),
-                              tooltip: 'Detener audio',
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    GestureDetector(
-                      onLongPress: () => _copyText(_summaryIntro!),
-                      child: _buildHighlightedText(
-                        text: _summaryIntro!,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        highlightEnd: _ttsIntroHighlightEnd,
-                        active: introActive,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  if (_summaryMain != null && _summaryMain!.isNotEmpty) ...[
-                    Row(
-                      children: [
-                        Text('Contenido principal', style: Theme.of(context).textTheme.titleSmall),
-                        const Spacer(),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              onPressed: _ttsReady ? _toggleTts : null,
-                              icon: Icon(
-                                mainActive && !_ttsPaused
-                                    ? Icons.pause
-                                    : Icons.play_arrow,
-                              ),
-                              tooltip: mainActive
-                                  ? (_ttsPaused
-                                      ? 'Reanudar audio'
-                                      : 'Pausar audio')
-                                  : 'Reproducir audio',
-                            ),
-                            IconButton(
-                              onPressed:
-                                  _ttsReady && mainActive ? _stopTts : null,
-                              icon: const Icon(Icons.stop),
-                              tooltip: 'Detener audio',
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final textStyle =
-                            Theme.of(context).textTheme.bodyMedium;
-                        final span = _buildHighlightedSpan(
-                          text: _summaryMain!,
-                          style: textStyle,
-                          highlightEnd: _ttsMainHighlightEnd,
-                          active: mainActive,
-                        );
-                        final painter = TextPainter(
-                          text: span,
-                          maxLines: _summaryPreviewLines,
-                          textDirection: Directionality.of(context),
-                        )..layout(maxWidth: constraints.maxWidth);
-                        final exceeds = painter.didExceedMaxLines;
-                        final showFull = _summaryMainExpanded || mainActive;
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            GestureDetector(
-                              onLongPress: () => _copyText(_summaryMain!),
-                              child: _buildHighlightedText(
-                                text: _summaryMain!,
-                                style: textStyle,
-                                highlightEnd: _ttsMainHighlightEnd,
-                                active: mainActive,
-                                maxLines:
-                                    showFull ? null : _summaryPreviewLines,
-                                overflow: showFull
-                                    ? TextOverflow.visible
-                                    : TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (exceeds || _summaryMainExpanded)
-                              TextButton(
-                                onPressed: mainActive
-                                    ? null
-                                    : () {
-                                        setState(() {
-                                          _summaryMainExpanded =
-                                              !_summaryMainExpanded;
-                                        });
-                                      },
-                                child: Text(_summaryMainExpanded
-                                    ? 'Ver menos'
-                                    : 'Ver más'),
-                              ),
-                          ],
-                        );
-                      },
-                    ),
-                  ] else if (_summary != null && _summaryIntro == null && _summaryMain == null)
-                    SelectableText(_summary!)
-                  else if (_summaryError != null)
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_summaryError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                        const SizedBox(height: 12),
-                        OutlinedButton.icon(onPressed: _loadingSummary ? null : _requestSummaryGeneration, icon: const Icon(Icons.refresh), label: const Text('Reintentar')),
-                      ],
-                    )
-                  else if (showGenerateSummary)
-                    OutlinedButton.icon(
-                      onPressed: _loadingSummary ? null : _requestSummaryGeneration,
-                      icon: _loadingSummary ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.auto_fix_high),
-                      label: Text(_loadingSummary ? 'Generando...' : 'Generar'),
-                    ),
-                  if (_summaryQuestions.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Text('Preguntas para profundizar',
-                            style: Theme.of(context).textTheme.titleSmall),
-                        const Spacer(),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              onPressed: _ttsReady ? _toggleQuestionsTts : null,
-                              icon: Icon(
-                                questionsActive && !_ttsPaused
-                                    ? Icons.pause
-                                    : Icons.play_arrow,
-                              ),
-                              tooltip: questionsActive
-                                  ? (_ttsPaused
-                                      ? 'Reanudar audio'
-                                      : 'Pausar audio')
-                                  : 'Reproducir audio',
-                            ),
-                            IconButton(
-                              onPressed: _ttsReady && questionsActive
-                                  ? _stopTts
-                                  : null,
-                              icon: const Icon(Icons.stop),
-                              tooltip: 'Detener audio',
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    for (var i = 0; i < visibleQuestions.length; i++)
-                      TextButton(
-                        onPressed: () => _openQuestion(visibleQuestions[i]),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: _buildHighlightedText(
-                            text: visibleQuestions[i],
-                            highlightEnd: (questionsHighlightActive &&
-                                    i < _ttsQuestionHighlightEnds.length)
-                                ? _ttsQuestionHighlightEnds[i]
-                                : 0,
-                            active: questionsHighlightActive,
-                          ),
-                        ),
-                      ),
-                  ],
-                ] else ...[
-                  Row(
-                    children: [
-                      Text('Transcripción', style: Theme.of(context).textTheme.titleMedium),
-                      const Spacer(),
-                      TextButton.icon(onPressed: (_transcript != null && _transcript!.isNotEmpty) || (_error != null && _error!.isNotEmpty) ? _copyTranscript : null, icon: const Icon(Icons.copy), label: const Text('Copy All')),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  if (_tracks.isNotEmpty) ...[
-                    DropdownButtonFormField<YouTubeCaptionTrack>(
-                      value: _selectedTrack,
-                      items: _tracks.map((track) => DropdownMenuItem(value: track, child: Text(_formatTrackLabel(track)))).toList(),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        _resetTtsQueue();
-                        setState(() {
-                          _activeTab = _SummaryTab.transcript;
-                          _selectedTrack = value;
-                          _userSelectedTrack = true;
-                          _transcript = null;
-                          _transcriptExpanded = false;
-                          _summary = null;
-                          _summaryError = null;
-                          _error = null;
-                          _summaryRequested = false;
-                          _loadingSummary = false;
-                          _summaryIntro = null;
-                          _summaryMain = null;
-                          _summaryQuestions = const [];
-                          _summaryMainExpanded = false;
-                          _ttsPlaying = false;
-                          _ttsPaused = false;
-                          _ttsTarget = _TtsTarget.none;
-                          _ttsHighlightStart = 0;
-                          _ttsMainHighlightEnd = 0;
-                          _ttsIntroHighlightEnd = 0;
-                          _ttsSpeechText = '';
-                        });
-                        _tts.stop();
-                        _ensureTranscriptLoaded();
-                      },
-                      decoration: const InputDecoration(labelText: 'Pista de subtítulos', border: OutlineInputBorder()),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                  if (_transcript != null)
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final style = Theme.of(context).textTheme.bodyMedium;
-                        final fullText = _transcript!;
-                        final painter = TextPainter(
-                          text: TextSpan(text: fullText, style: style),
-                          maxLines: 10,
-                          textDirection: TextDirection.ltr,
-                        )..layout(maxWidth: constraints.maxWidth);
-                        var endOffset = painter.getPositionForOffset(Offset(constraints.maxWidth, painter.height)).offset;
-                        if (endOffset < 0) endOffset = 0;
-                        if (endOffset > fullText.length) {
-                          endOffset = fullText.length;
-                        }
-                        final exceeds = endOffset < fullText.length;
-                        final previewText = exceeds ? '${fullText.substring(0, endOffset).trimRight()}…' : fullText;
-                        final displayText = _transcriptExpanded || !exceeds ? fullText : previewText;
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            SelectableText(displayText),
-                            if (exceeds || _transcriptExpanded)
-                              TextButton(
-                                onPressed: () {
-                                  setState(() {
-                                    _transcriptExpanded = !_transcriptExpanded;
-                                  });
-                                },
-                                child: Text(_transcriptExpanded ? 'Ver menos' : 'Ver más'),
-                              ),
-                          ],
-                        );
-                      },
-                    )
-                  else if (_error != null)
-                    Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))
-                  else if (_loadingTranscript)
-                    const Text('Cargando transcripción...')
-                  else
-                    const Text('No hay transcripción disponible.'),
-                ],
+                _buildSummarySection(context),
               ],
             ),
           ),
@@ -1698,8 +1768,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     );
   }
 }
-
-enum _SummaryTab { summary, transcript }
 
 enum _TtsTarget { none, intro, main, questions }
 
@@ -1750,20 +1818,3 @@ class _TtsChunk {
   final int offset;
 }
 
-class _TabLabel extends StatelessWidget {
-  const _TabLabel({required this.text, required this.loading});
-
-  final String text;
-  final bool loading;
-
-  @override
-  Widget build(BuildContext context) {
-    final children = <Widget>[Text(text)];
-    if (loading) {
-      children.addAll([const SizedBox(width: 8), const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))]);
-    }
-    return Center(
-      child: Row(mainAxisSize: MainAxisSize.min, children: children),
-    );
-  }
-}

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/youtube_subscription.dart';
 import '../services/youtube_api_service.dart';
 import '../services/quota_tracker.dart';
@@ -214,6 +215,31 @@ class _ListsScreenState extends State<ListsScreen> {
     });
   }
 
+  Future<void> _openDeepenPrompt(List<YouTubeSubscription> channels) async {
+    final buffer = StringBuffer(
+      'Actualmente estoy siguiendo a estos canales:\n',
+    );
+    if (channels.isEmpty) {
+      buffer.writeln('- (sin canales)');
+    } else {
+      for (final channel in channels) {
+        final title = channel.title.trim();
+        if (title.isEmpty) continue;
+        buffer.writeln('- $title');
+      }
+    }
+    buffer.write('\nEn base a esta lista, me gustaría que: ');
+    final uri = Uri.parse(
+      'https://chatgpt.com/?prompt=${Uri.encodeComponent(buffer.toString())}',
+    );
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir el enlace.')),
+      );
+    }
+  }
+
 
   void _openAssignLists(YouTubeSubscription subscription) {
     final selected = _listsForChannel(subscription.channelId);
@@ -416,6 +442,8 @@ class _ListsScreenState extends State<ListsScreen> {
         separatorBuilder: (_, __) => const Divider(height: 1),
         itemBuilder: (context, index) {
           if (index == 0) {
+            final isSpecificList = _selectedListId != _allListId &&
+                _selectedListId != _unassignedListId;
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -432,6 +460,27 @@ class _ListsScreenState extends State<ListsScreen> {
                   showUnassigned: unassignedCount > 0,
                   listById: listById,
                 ),
+                if (isSpecificList) ...[
+                  const SizedBox(height: 12),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: listFiltered.isEmpty
+                            ? null
+                            : () => _openDeepenPrompt(listFiltered),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFFA1021),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        icon: const Icon(Icons.auto_fix_high),
+                        label: const Text('Profundizar'),
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),

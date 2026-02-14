@@ -78,6 +78,30 @@ class _HistoryScreenState extends State<HistoryScreen> {
   bool _loading = true;
   VoidCallback? _tabListener;
 
+  List<_HistoryListEntry> _buildEntries(List<HistoryVideo> items) {
+    final entries = <_HistoryListEntry>[];
+    String? lastKey;
+    for (final item in items) {
+      final date = item.lastActivityAt.toLocal();
+      final key = '${date.year}-${date.month}-${date.day}';
+      if (key != lastKey) {
+        entries.add(_HistoryListEntry.header(_labelForDay(date)));
+        lastKey = key;
+      }
+      entries.add(_HistoryListEntry.item(item));
+    }
+    return entries;
+  }
+
+  String _labelForDay(DateTime date) {
+    final now = DateTime.now().toLocal();
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(date.year, date.month, date.day);
+    if (target == today) return 'Hoy';
+    if (target == today.subtract(const Duration(days: 1))) return 'Ayer';
+    return formatRelativeTime(target);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -199,14 +223,35 @@ class _HistoryScreenState extends State<HistoryScreen> {
       );
     }
 
+    final entries = _buildEntries(_items);
     return RefreshIndicator(
       onRefresh: _loadHistory,
       child: ListView.separated(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: _items.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 12),
+        padding: const EdgeInsets.only(bottom: 8),
+        itemCount: entries.length,
+        separatorBuilder: (context, index) {
+          final current = entries[index];
+          final next = entries[index + 1];
+          if (!current.isHeader && !next.isHeader) {
+            return const SizedBox(height: 12);
+          }
+          if (current.isHeader) {
+            return const SizedBox(height: 8);
+          }
+          return const SizedBox(height: 16);
+        },
         itemBuilder: (context, index) {
-          final item = _items[index];
+          final entry = entries[index];
+          if (entry.isHeader) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+              child: Text(
+                entry.header!,
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            );
+          }
+          final item = entry.item!;
           return _HistoryCard(
             item: item,
             channelAvatarUrl: _channelAvatars[item.channelId] ?? '',
@@ -216,6 +261,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
   }
+}
+
+class _HistoryListEntry {
+  const _HistoryListEntry.header(this.header) : item = null;
+  const _HistoryListEntry.item(this.item) : header = null;
+
+  final String? header;
+  final HistoryVideo? item;
+  bool get isHeader => header != null;
 }
 
 class _HistoryCard extends StatelessWidget {
@@ -274,7 +328,7 @@ class _HistoryCard extends StatelessWidget {
                             const SizedBox(width: 6),
                           const Icon(
                             Icons.auto_fix_high,
-                            color: Colors.white70,
+                            color: Color(0xFFFA1021),
                             size: 16,
                           ),
                         ],

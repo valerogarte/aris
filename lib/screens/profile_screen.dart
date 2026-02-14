@@ -22,6 +22,12 @@ class _ListFormResult {
   final String parentId;
 }
 
+class _ListDragData {
+  const _ListDragData(this.id);
+
+  final String id;
+}
+
 class _ModelOption {
   const _ModelOption({
     required this.id,
@@ -194,6 +200,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _loadingLists = true;
   List<SubscriptionList> _lists = const [];
   Map<String, Set<String>> _assignments = {};
+  String? _draggingListId;
+  String? _dragHoverParentId;
 
   static final RegExp _backupFilePattern =
       RegExp(r'^aris_backup_(\d{12})\.db$');
@@ -873,6 +881,40 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return descendants;
   }
 
+  bool _canAssignParent(String childId, String parentId) {
+    if (childId.isEmpty || parentId.isEmpty) return false;
+    if (childId == parentId) return false;
+    final descendants = _collectDescendantIds(childId);
+    return !descendants.contains(parentId);
+  }
+
+  void _assignParentByDrag(String childId, String parentId) {
+    if (!_canAssignParent(childId, parentId)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No puedes asignar como padre una etiqueta hija.'),
+        ),
+      );
+      return;
+    }
+    final current = _lists.firstWhere(
+      (list) => list.id == childId,
+      orElse: () => SubscriptionList(id: '', name: '', iconKey: 'label'),
+    );
+    if (current.id.isEmpty || current.parentId == parentId) return;
+    setState(() {
+      _lists = _lists
+          .map(
+            (list) => list.id == childId
+                ? list.copyWith(parentId: parentId)
+                : list,
+          )
+          .toList();
+      _dragHoverParentId = null;
+    });
+    _saveLists();
+  }
+
   void _reorderLists(int oldIndex, int newIndex) {
     if (newIndex > oldIndex) {
       newIndex -= 1;
@@ -1449,36 +1491,140 @@ class _ProfileScreenState extends State<ProfileScreen> {
               itemBuilder: (context, index) {
                 final list = _lists[index];
                 final displayName = listDisplayName(list, listById);
-                return ListTile(
+                final isDropTarget = _dragHoverParentId == list.id;
+                final isDragging = _draggingListId == list.id;
+                return DragTarget<_ListDragData>(
                   key: ValueKey(list.id),
-                  minLeadingWidth: 72,
-                  leading: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ReorderableDragStartListener(
-                        index: index,
-                        child: const Icon(Icons.drag_handle),
+                  onWillAcceptWithDetails: (details) {
+                    final canAccept =
+                        _canAssignParent(details.data.id, list.id);
+                    if (canAccept) {
+                      setState(() {
+                        _dragHoverParentId = list.id;
+                      });
+                    }
+                    return canAccept;
+                  },
+                  onLeave: (_) {
+                    if (_dragHoverParentId == list.id) {
+                      setState(() {
+                        _dragHoverParentId = null;
+                      });
+                    }
+                  },
+                  onAcceptWithDetails: (details) {
+                    _assignParentByDrag(details.data.id, list.id);
+                  },
+                  builder: (context, candidateData, rejectedData) {
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      decoration: BoxDecoration(
+                        color: isDropTarget
+                            ? Theme.of(context)
+                                .colorScheme
+                                .primary
+                                .withOpacity(0.12)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        border: isDropTarget
+                            ? Border.all(
+                                color: Theme.of(context).colorScheme.primary,
+                              )
+                            : null,
                       ),
-                      const SizedBox(width: 8),
-                      Icon(iconForListKey(list.iconKey)),
-                    ],
-                  ),
-                  title: Text(displayName),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.edit),
-                        tooltip: 'Editar',
-                        onPressed: () => _renameList(list),
+                      child: Opacity(
+                        opacity: isDragging ? 0.4 : 1,
+                        child: ListTile(
+                          minLeadingWidth: 72,
+                          leading: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ReorderableDragStartListener(
+                                index: index,
+                                child: const Icon(Icons.drag_handle),
+                              ),
+                              const SizedBox(width: 8),
+                              Icon(iconForListKey(list.iconKey)),
+                            ],
+                          ),
+                          title: Text(displayName),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              LongPressDraggable<_ListDragData>(
+                                data: _ListDragData(list.id),
+                                feedback: Material(
+                                  color: Colors.transparent,
+                                  child: ConstrainedBox(
+                                    constraints:
+                                        const BoxConstraints(maxWidth: 240),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 8,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF1F1F1F),
+                                        borderRadius:
+                                            BorderRadius.circular(12),
+                                        boxShadow: const [
+                                          BoxShadow(
+                                            color: Color(0x55000000),
+                                            blurRadius: 8,
+                                            offset: Offset(0, 4),
+                                          ),
+                                        ],
+                                      ),
+                                      child: Text(
+                                        displayName,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                childWhenDragging: Icon(
+                                  Icons.account_tree,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .primary,
+                                ),
+                                onDragStarted: () {
+                                  setState(() {
+                                    _draggingListId = list.id;
+                                  });
+                                },
+                                onDragEnd: (_) {
+                                  if (!mounted) return;
+                                  setState(() {
+                                    _draggingListId = null;
+                                    _dragHoverParentId = null;
+                                  });
+                                },
+                                child: IconButton(
+                                  icon: const Icon(Icons.account_tree),
+                                  tooltip: 'Arrastra para asignar padre',
+                                  onPressed: () {},
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.edit),
+                                tooltip: 'Editar',
+                                onPressed: () => _renameList(list),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete),
+                                tooltip: 'Eliminar',
+                                onPressed: () => _deleteList(list),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.delete),
-                        tooltip: 'Eliminar',
-                        onPressed: () => _deleteList(list),
-                      ),
-                    ],
-                  ),
+                    );
+                  },
                 );
               },
             ),
