@@ -11,6 +11,7 @@ import '../storage/ai_settings_store.dart';
 import '../ui/list_icons.dart';
 import '../services/ai_cost_tracker.dart';
 import '../ui/channel_avatar.dart';
+import 'channel_videos_screen.dart';
 
 String formatRelativeTime(DateTime date) {
   final now = DateTime.now().toLocal();
@@ -448,6 +449,23 @@ class _VideosScreenState extends State<VideosScreen> {
                 ),
               ).then((_) => _loadSummaryFlags(_videos));
             },
+            onChannelTap: () {
+              final channelId = video.channelId.trim();
+              if (channelId.isEmpty) return;
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ChannelVideosScreen(
+                    accessToken: _accessToken,
+                    channelId: channelId,
+                    channelTitle: video.channelTitle,
+                    channelAvatarUrl:
+                        _channelAvatars[video.channelId] ?? '',
+                    quotaTracker: widget.quotaTracker,
+                    aiCostTracker: widget.aiCostTracker,
+                  ),
+                ),
+              );
+            },
           );
         },
       ),
@@ -463,12 +481,14 @@ class _VideoCard extends StatelessWidget {
     required this.channelAvatarUrl,
     required this.hasSummary,
     required this.onTap,
+    required this.onChannelTap,
   });
 
   final YouTubeVideo video;
   final String channelAvatarUrl;
   final bool hasSummary;
   final VoidCallback onTap;
+  final VoidCallback onChannelTap;
 
   @override
   Widget build(BuildContext context) {
@@ -478,40 +498,47 @@ class _VideoCard extends StatelessWidget {
     );
     final durationLabel = _formatDuration(video.durationSeconds);
 
-    return InkWell(
-      onTap: onTap,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          AspectRatio(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: onTap,
+          child: AspectRatio(
             aspectRatio: 16 / 9,
             child: _Thumbnail(
               url: video.thumbnailUrl,
               durationLabel: durationLabel,
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Column(
-                  children: [
-                    ChannelAvatar(
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Column(
+                children: [
+                  InkWell(
+                    onTap: onChannelTap,
+                    customBorder: const CircleBorder(),
+                    child: ChannelAvatar(
                       name: video.channelTitle,
                       imageUrl: channelAvatarUrl,
                     ),
-                    const SizedBox(height: 6),
-                    if (hasSummary)
-                      const Icon(
-                        Icons.check_circle,
-                        color: Color(0xFFFA1021),
-                        size: 16,
-                      ),
-                  ],
-                ),
-                const SizedBox(width: 12),
-                Expanded(
+                  ),
+                  const SizedBox(height: 6),
+                  if (hasSummary)
+                    const Icon(
+                      Icons.check_circle,
+                      color: Color(0xFFFA1021),
+                      size: 16,
+                    ),
+                ],
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: InkWell(
+                  onTap: onTap,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -534,17 +561,20 @@ class _VideoCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                Icon(
+              ),
+              const SizedBox(width: 8),
+              InkWell(
+                onTap: onTap,
+                child: const Icon(
                   Icons.more_vert,
                   color: Colors.white54,
                   size: 20,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

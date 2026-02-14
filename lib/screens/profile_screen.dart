@@ -66,7 +66,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   late final AiSummaryService _aiSummaryService;
   final SftpBackupService _backupService = SftpBackupService();
 
-  static const String _priceNote = 'Precio por 1M tokens: entrada/salida';
+  static const String _priceNote =
+      'Precio por 1M tokens: entrada / caché / salida (cuando aplica)';
 
   static const List<String> _providers = [
     'ChatGPT',
@@ -78,12 +79,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
   static const Map<String, List<_ModelOption>> _modelsByProvider = {
     'ChatGPT': [
       _ModelOption(
-        id: 'gpt-5.2',
-        label: 'gpt-5.2 (€1.75 / €14.00)',
+        id: 'gpt-5-mini',
+        label: 'gpt-5-mini (€0.25 / €0.025 / €2.00)',
       ),
       _ModelOption(
-        id: 'gpt-5-mini',
-        label: 'gpt-5-mini (€0.25 / €2.00)',
+        id: 'gpt-5-nano',
+        label: 'gpt-5-nano (€0.05 / €0.005 / €0.40)',
+      ),
+      _ModelOption(
+        id: 'gpt-4.1-mini',
+        label: 'gpt-4.1-mini (€0.40 / €0.10 / €1.60)',
+      ),
+      _ModelOption(
+        id: 'gpt-4.1-nano',
+        label: 'gpt-4.1-nano (€0.10 / €0.025 / €0.40)',
+      ),
+      _ModelOption(
+        id: 'gpt-4o-mini',
+        label: 'gpt-4o-mini (€0.15 / €0.075 / €0.60)',
       ),
     ],
     'Gemini': [
@@ -95,6 +108,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
         id: 'gemini-3-flash-preview',
         label: 'gemini-3-flash-preview (€0.50 / €3.00)',
       ),
+      _ModelOption(
+        id: 'gemini-2.5-pro',
+        label: 'gemini-2.5-pro (€1.25 / €10.00)',
+      ),
+      _ModelOption(
+        id: 'gemini-2.5-flash',
+        label: 'gemini-2.5-flash (€0.30 / €2.50)',
+      ),
+      _ModelOption(
+        id: 'gemini-2.5-flash-lite',
+        label: 'gemini-2.5-flash-lite (€0.10 / €0.40)',
+      ),
     ],
     'Antrophic': [
       _ModelOption(
@@ -102,11 +127,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         label: 'claude-opus-4-6 (€5.00 / €25.00)',
       ),
       _ModelOption(
-        id: 'claude-sonnet-4-5-20250929',
+        id: 'claude-sonnet-4-5',
         label: 'claude-sonnet-4-5 (€3.00 / €15.00)',
       ),
       _ModelOption(
-        id: 'claude-haiku-4-5-20251001',
+        id: 'claude-haiku-4-5',
         label: 'claude-haiku-4-5 (€1.00 / €5.00)',
       ),
     ],
@@ -116,8 +141,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
         label: 'grok-4 (€3.00 / €15.00)',
       ),
       _ModelOption(
+        id: 'grok-4-1-fast-reasoning',
+        label: 'grok-4-1-fast-reasoning (€0.20 / €0.50)',
+      ),
+      _ModelOption(
         id: 'grok-4-1-fast-non-reasoning',
         label: 'grok-4-1-fast-non-reasoning (€0.20 / €0.50)',
+      ),
+      _ModelOption(
+        id: 'grok-4-fast-reasoning',
+        label: 'grok-4-fast-reasoning (€0.20 / €0.50)',
+      ),
+      _ModelOption(
+        id: 'grok-4-fast-non-reasoning',
+        label: 'grok-4-fast-non-reasoning (€0.20 / €0.50)',
+      ),
+      _ModelOption(
+        id: 'grok-code-fast-1',
+        label: 'grok-code-fast-1 (€0.20 / €1.50)',
       ),
     ],
   };
@@ -966,95 +1007,103 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return result ?? false;
   }
 
-  Widget _buildAiSection(
-    BuildContext context,
-    List<_ModelOption> models,
-  ) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          DropdownButtonFormField<String>(
-            value: _selectedProvider,
-            items: _providers
-                .map(
-                  (provider) => DropdownMenuItem(
-                    value: provider,
-                    child: Text(provider),
-                  ),
-                )
-                .toList(),
-            onChanged: _loading ? null : _onProviderChanged,
-            decoration: const InputDecoration(
-              labelText: 'Proveedor',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            value: models.any((item) => item.id == _selectedModel)
-                ? _selectedModel
-                : null,
-            items: models
-                .map(
-                  (model) => DropdownMenuItem(
-                    value: model.id,
-                    child: Text(model.label),
-                  ),
-                )
-                .toList(),
-            onChanged: _loading || models.isEmpty ? null : _onModelChanged,
-            decoration: const InputDecoration(
-              labelText: 'Modelo',
-              helperText: _priceNote,
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _apiKeyController,
-            autocorrect: false,
-            enableSuggestions: false,
-            obscureText: !_showApiKey,
-            decoration: InputDecoration(
-              labelText: 'Clave API',
-              border: OutlineInputBorder(),
-              suffixIcon: IconButton(
-                onPressed: () {
-                  setState(() {
-                    _showApiKey = !_showApiKey;
-                  });
-                },
-                icon: Icon(
-                  _showApiKey ? Icons.visibility_off : Icons.visibility,
+  Widget _buildAiSection(BuildContext context) {
+    return StatefulBuilder(
+      builder: (context, setModalState) {
+        final models = _modelsByProvider[_selectedProvider] ?? const [];
+        final selectedModel = models.any((item) => item.id == _selectedModel)
+            ? _selectedModel
+            : (models.isNotEmpty ? models.first.id : null);
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              DropdownButtonFormField<String>(
+                value: _selectedProvider,
+                items: _providers
+                    .map(
+                      (provider) => DropdownMenuItem(
+                        value: provider,
+                        child: Text(provider),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _loading
+                    ? null
+                    : (provider) {
+                        _onProviderChanged(provider);
+                        setModalState(() {});
+                      },
+                decoration: const InputDecoration(
+                  labelText: 'Proveedor',
+                  border: OutlineInputBorder(),
                 ),
-                tooltip: _showApiKey ? 'Ocultar clave' : 'Mostrar clave',
               ),
-            ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: selectedModel,
+                items: models
+                    .map(
+                      (model) => DropdownMenuItem(
+                        value: model.id,
+                        child: Text(model.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _loading || models.isEmpty ? null : _onModelChanged,
+                decoration: const InputDecoration(
+                  labelText: 'Modelo',
+                  helperText: _priceNote,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _apiKeyController,
+                autocorrect: false,
+                enableSuggestions: false,
+                obscureText: !_showApiKey,
+                decoration: InputDecoration(
+                  labelText: 'Clave API',
+                  border: OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _showApiKey = !_showApiKey;
+                      });
+                    },
+                    icon: Icon(
+                      _showApiKey ? Icons.visibility_off : Icons.visibility,
+                    ),
+                    tooltip: _showApiKey ? 'Ocultar clave' : 'Mostrar clave',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _testingAi ? null : _testProvider,
+                icon: _testingAi
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check_circle_outline),
+                label: Text(
+                  _testingAi ? 'Probando...' : 'Probar proveedor',
+                ),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _loading ? null : _saveAiSettingsWithFeedback,
+                icon: const Icon(Icons.save),
+                label: const Text('Guardar'),
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _testingAi ? null : _testProvider,
-            icon: _testingAi
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.check_circle_outline),
-            label: Text(
-              _testingAi ? 'Probando...' : 'Probar proveedor',
-            ),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _loading ? null : _saveAiSettingsWithFeedback,
-            icon: const Icon(Icons.save),
-            label: const Text('Guardar'),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1390,7 +1439,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final models = _modelsByProvider[_selectedProvider] ?? const [];
     final providerSubtitle = _loading
         ? 'Cargando...'
         : '$_selectedProvider • $_selectedModel';
@@ -1432,7 +1480,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             subtitle: providerSubtitle,
             onTap: () => _openSection(
               title: 'Proveedor de IA',
-              builder: (context) => _buildAiSection(context, models),
+              builder: (context) => _buildAiSection(context),
             ),
           ),
           _buildMenuTile(

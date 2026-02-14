@@ -5,8 +5,10 @@ import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 
 import '../models/youtube_caption_track.dart';
+import '../models/youtube_channel.dart';
 import '../models/youtube_subscription.dart';
 import '../models/youtube_video.dart';
+import '../storage/channel_store.dart';
 import 'quota_tracker.dart';
 
 class YouTubeChannelVideosPage {
@@ -66,6 +68,8 @@ class YouTubeApiService {
     }
 
     if (channelIds.isEmpty) return [];
+
+    await _storeChannelsInfo(channelIds);
 
     final limitedChannels = channelIds.take(maxSubscriptions).toList();
     return _fetchLatestVideosForChannels(limitedChannels);
@@ -268,7 +272,50 @@ class YouTubeApiService {
       pageToken = data['nextPageToken'] as String?;
     } while (pageToken != null && pageToken.isNotEmpty);
 
+    await _storeChannelsInfo(
+      subscriptions.map((sub) => sub.channelId).toList(),
+    );
+
     return subscriptions;
+  }
+
+  Future<List<YouTubeChannel>> fetchChannelsDetails(
+    List<String> channelIds,
+  ) async {
+    final result = <YouTubeChannel>[];
+    final ids = channelIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList();
+    if (ids.isEmpty) return result;
+
+    const chunkSize = 50;
+    for (var i = 0; i < ids.length; i += chunkSize) {
+      final chunk = ids.sublist(
+        i,
+        math.min(i + chunkSize, ids.length),
+      );
+      final data = await _get(
+        'channels',
+        {
+          'part': 'snippet,contentDetails,statistics',
+          'id': chunk.join(','),
+        },
+        units: _unitsDefault,
+        label: 'channels.list',
+      );
+      final items = (data['items'] as List?) ?? const [];
+      for (final item in items) {
+        if (item is! Map<String, dynamic>) continue;
+        final channel = YouTubeChannel.fromChannelItem(item);
+        if (channel.channelId.isNotEmpty) {
+          result.add(channel);
+        }
+      }
+    }
+
+    return result;
   }
 
   Future<List<YouTubeCaptionTrack>> fetchCaptionTracks(String videoId) async {
@@ -544,6 +591,19 @@ class YouTubeApiService {
   Future<void> _addUnits(int units, {String? label}) async {
     if (quotaTracker == null) return;
     await quotaTracker!.addUnits(units, label: label);
+  }
+
+  Future<void> _storeChannelsInfo(List<String> channelIds) async {
+    final store = ChannelStore();
+    final existingIds = await store.existingIds(channelIds);
+    final missingIds = channelIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .where((id) => !existingIds.contains(id))
+        .toList();
+    if (missingIds.isEmpty) return;
+    final channels = await fetchChannelsDetails(missingIds);
+    await store.upsertChannels(channels);
   }
 
 

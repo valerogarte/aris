@@ -16,6 +16,7 @@ import '../services/youtube_api_service.dart';
 import '../services/youtube_transcript_service.dart';
 import '../storage/ai_settings_store.dart';
 import '../storage/expiring_cache_store.dart';
+import '../storage/history_store.dart';
 import '../services/ai_cost_tracker.dart';
 import '../ui/channel_avatar.dart';
 import 'channel_videos_screen.dart';
@@ -44,15 +45,16 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   static const Duration _cacheTtl = Duration(days: 2);
   static const int _summaryPreviewLines = 10;
   static const int _ttsChunkLimit = 1000;
+  static final Map<String, Future<String?>> _summaryJobs = {};
 
   late final YouTubeTranscriptService _transcripts;
   late final YouTubeApiService _api;
   final AiSettingsStore _aiSettingsStore = AiSettingsStore();
-  late final AiSummaryService _aiSummaryService;
   late final ExpiringCacheStore _transcriptCache;
   late final ExpiringCacheStore _summaryCache;
   final ExpiringCacheStore _avatarCache =
       ExpiringCacheStore('channel_avatars');
+  final HistoryStore _historyStore = HistoryStore();
   YoutubePlayerController? _playerController;
   Timer? _playerTimeout;
   bool _playerReady = false;
@@ -69,9 +71,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   bool _loadingTranscript = false;
   bool _loadingSummary = false;
   bool _summaryRequested = false;
-  bool _summaryInFlight = false;
-  bool _disposePending = false;
-  bool _aiServiceDisposed = false;
   late final FlutterTts _tts;
   bool _ttsReady = false;
   bool _ttsPlaying = false;
@@ -83,6 +82,8 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   int _ttsChunkOffset = 0;
   String _ttsChunkText = '';
   bool _ttsSequenceActive = false;
+  bool _historyWatchedLogged = false;
+  bool _historySummaryLogged = false;
   int _ttsQuestionsStartOffset = 0;
   bool _ttsQuestionsFromMainActive = false;
   int _ttsHighlightStart = 0;
@@ -92,6 +93,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   int _ttsQuestionsPrefixLength = 0;
   List<_QuestionRange> _ttsQuestionRanges = const [];
   List<int> _ttsQuestionHighlightEnds = const [];
+  _NormalizedText? _ttsNormalizedSpeech;
   String? _summaryIntro;
   String? _summaryMain;
   List<String> _summaryQuestions = const [];
@@ -109,7 +111,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       accessToken: widget.accessToken,
       quotaTracker: widget.quotaTracker,
     );
-    _aiSummaryService = AiSummaryService(costTracker: widget.aiCostTracker);
     _tts = FlutterTts();
     _configureTts();
     _transcriptCache = ExpiringCacheStore('transcripts');
@@ -124,26 +125,18 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
   @override
   void dispose() {
-    _disposePending = true;
     _playerTimeout?.cancel();
+    _playerController?.removeListener(_handlePlayerState);
     _playerController?.dispose();
     _transcripts.dispose();
     _api.dispose();
-    if (!_summaryInFlight) {
-      _disposeAiService();
-    }
     _tts.stop();
     super.dispose();
   }
 
-  void _disposeAiService() {
-    if (_aiServiceDisposed) return;
-    _aiSummaryService.dispose();
-    _aiServiceDisposed = true;
-  }
-
   void _initPlayer() {
     _playerTimeout?.cancel();
+    _playerController?.removeListener(_handlePlayerState);
     _playerController?.dispose();
     _playerReady = false;
     _playerStuck = false;
@@ -157,6 +150,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       initialVideoId: widget.video.id,
       flags: YoutubePlayerFlags(autoPlay: false, enableCaption: true, useHybridComposition: _useHybridComposition),
     );
+    _playerController!.addListener(_handlePlayerState);
     if (mounted) {
       setState(() {});
     }
@@ -182,6 +176,16 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       setState(() {
         _playerStuck = false;
       });
+    }
+  }
+
+  void _handlePlayerState() {
+    final controller = _playerController;
+    if (controller == null || _historyWatchedLogged) return;
+    final state = controller.value.playerState;
+    if (state == PlayerState.playing) {
+      _historyWatchedLogged = true;
+      _historyStore.markWatched(widget.video);
     }
   }
 
@@ -321,9 +325,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _log('transcript: cached key=$transcriptKey');
       }
 
-      if (_summaryRequested) {
-        await _maybeGenerateSummary();
-      }
     } catch (error) {
       if (!mounted) return;
       if (_selectedTrack != null) {
@@ -336,13 +337,6 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       if (!mounted) return;
       setState(() {
         _error = 'No se pudo generar la transcripción. Puede no estar disponible.\n$error';
-        if (_summaryRequested) {
-          if (_summary == null || _summary!.isEmpty) {
-            _summaryError = 'No se pudo generar el resumen porque falló la transcripción.';
-          }
-          _loadingSummary = false;
-          _summaryRequested = false;
-        }
       });
       _log('transcript: error $error');
     } finally {
@@ -404,15 +398,15 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       final targetLen = targetText.length;
       final safeStart = start.clamp(0, text.length);
       final safeEnd = end.clamp(0, text.length);
-      final progressIndex =
-          _ttsTarget == _TtsTarget.main ? safeStart : safeEnd;
+      final progressIndex = safeStart;
       final speechLen =
           (_ttsTarget == _TtsTarget.main && _ttsSpeechText.isNotEmpty)
               ? _ttsSpeechText.length
               : targetLen;
       final speechEnd = (baseOffset + progressIndex).clamp(0, speechLen);
+      final mappedEnd = _mapNormalizedSpeechEnd(speechEnd);
       final highlightStart = (baseOffset + safeStart).clamp(0, targetLen);
-      final highlightEnd = speechEnd.clamp(0, targetLen);
+      final highlightEnd = mappedEnd.clamp(0, targetLen);
       setState(() {
         _ttsHighlightStart = highlightStart;
         if (_ttsTarget == _TtsTarget.intro) {
@@ -425,7 +419,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
               : _ttsMainHighlightEnd;
           if (_ttsQuestionsStartOffset > 0 &&
               _ttsQuestionRanges.isNotEmpty) {
-            final relativeEnd = speechEnd - _ttsQuestionsStartOffset;
+            final relativeEnd = mappedEnd - _ttsQuestionsStartOffset;
             _ttsQuestionsFromMainActive = relativeEnd > 0;
             if (relativeEnd > 0) {
               final updated = List<int>.from(_ttsQuestionHighlightEnds);
@@ -505,6 +499,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _ttsQuestionRanges = const [];
         _ttsQuestionHighlightEnds = const [];
         _ttsSpeechText = '';
+        _ttsNormalizedSpeech = null;
       });
     });
     _tts.setErrorHandler((_) {
@@ -522,6 +517,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         _ttsQuestionRanges = const [];
         _ttsQuestionHighlightEnds = const [];
         _ttsSpeechText = '';
+        _ttsNormalizedSpeech = null;
       });
     });
     if (mounted) {
@@ -585,8 +581,161 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         : 'summary: cache hit (video) key=$summaryKey len=${cachedSummary.length}');
   }
 
+  String _formatSummaryError(Object error) {
+    final raw = error.toString();
+    const prefix = 'Exception: ';
+    if (raw.startsWith(prefix)) {
+      return raw.substring(prefix.length);
+    }
+    return raw;
+  }
+
+  Future<String?> _ensureSummaryCached({
+    YouTubeCaptionTrack? preferredTrack,
+    String? transcript,
+  }) async {
+    if (widget.video.id.isEmpty) {
+      throw Exception('No se encontró el vídeo.');
+    }
+    final settings = await _aiSettingsStore.load();
+    if (settings.apiKey.isEmpty) {
+      throw Exception('Configura una clave API en el perfil.');
+    }
+    if (settings.model.isEmpty) {
+      throw Exception('Selecciona un modelo en el perfil.');
+    }
+
+    final fallbackKey =
+        '${settings.provider}:${settings.model}:${widget.video.id}';
+    var track = preferredTrack;
+    if (track == null || track.id.isEmpty) {
+      final transcriptService = YouTubeTranscriptService();
+      try {
+        final tracks =
+            await transcriptService.fetchCaptionTracks(widget.video.id);
+        track = _pickDefaultTrack(tracks);
+      } catch (error) {
+        final fallbackSummary = await _summaryCache.get(fallbackKey);
+        if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
+          _log(
+            'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
+          );
+          return fallbackSummary;
+        }
+        rethrow;
+      } finally {
+        transcriptService.dispose();
+      }
+    }
+    if (track == null) {
+      final fallbackSummary = await _summaryCache.get(fallbackKey);
+      if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
+        _log(
+          'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
+        );
+        return fallbackSummary;
+      }
+      throw Exception('No hay transcripciones disponibles para este vídeo.');
+    }
+
+    final trackKey = _trackCacheKey(track);
+    final summaryKey =
+        '${settings.provider}:${settings.model}:${widget.video.id}:$trackKey';
+    final cachedSummary = await _summaryCache.get(summaryKey);
+    if (cachedSummary != null && cachedSummary.isNotEmpty) {
+      _log('summary: cache hit key=$summaryKey len=${cachedSummary.length}');
+      return cachedSummary;
+    }
+    final fallbackSummary = await _summaryCache.get(fallbackKey);
+    if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
+      _log(
+        'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
+      );
+      return fallbackSummary;
+    }
+
+    final existing = _summaryJobs[summaryKey];
+    if (existing != null) {
+      _log('summary: waiting existing job key=$summaryKey');
+      return await existing;
+    }
+
+    final future = _runSummaryJob(
+      settings: settings,
+      track: track,
+      trackKey: trackKey,
+      summaryKey: summaryKey,
+      fallbackKey: fallbackKey,
+      transcript: transcript,
+    );
+    _summaryJobs[summaryKey] = future;
+    try {
+      return await future;
+    } finally {
+      _summaryJobs.remove(summaryKey);
+    }
+  }
+
+  Future<String?> _runSummaryJob({
+    required AiProviderSettings settings,
+    required YouTubeCaptionTrack track,
+    required String trackKey,
+    required String summaryKey,
+    required String fallbackKey,
+    String? transcript,
+  }) async {
+    final transcriptService = YouTubeTranscriptService();
+    final aiService = AiSummaryService(costTracker: widget.aiCostTracker);
+    try {
+      final transcriptKey = '${widget.video.id}:$trackKey';
+      var text = transcript?.trim() ?? '';
+      String? cachedTranscript;
+      if (text.isEmpty) {
+        cachedTranscript = await _transcriptCache.get(transcriptKey);
+        text = cachedTranscript?.trim() ?? '';
+      }
+      if (text.isEmpty) {
+        text = (await transcriptService.downloadCaption(track.id)).trim();
+      }
+      if (text.isEmpty) {
+        throw Exception('No hay texto para resumir.');
+      }
+      if ((cachedTranscript == null || cachedTranscript.isEmpty) &&
+          text.isNotEmpty) {
+        await _transcriptCache.set(transcriptKey, text, _cacheTtl);
+        _log('transcript: cached key=$transcriptKey');
+      }
+
+      _log(
+        'summary: calling provider=${settings.provider} model=${settings.model}',
+      );
+      final summary = await aiService.summarize(
+        provider: settings.provider,
+        model: settings.model,
+        apiKey: settings.apiKey,
+        transcript: text,
+        title: widget.video.title,
+        channel: widget.video.channelTitle,
+      );
+      if (summary.isNotEmpty) {
+        await _summaryCache.set(summaryKey, summary, _cacheTtl);
+        await _summaryCache.set(fallbackKey, summary, _cacheTtl);
+        _log('summary: cached key=$summaryKey len=${summary.length}');
+        return summary;
+      }
+      throw Exception('No se pudo generar el resumen.');
+    } finally {
+      transcriptService.dispose();
+      aiService.dispose();
+    }
+  }
+
   Future<void> _requestSummaryGeneration() async {
     if (_loadingSummary) return;
+    if (!_historySummaryLogged) {
+      _historySummaryLogged = true;
+      _historyStore.markSummaryRequested(widget.video);
+    }
     setState(() {
       _summaryRequested = true;
       _summaryError = null;
@@ -599,116 +748,32 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _activeTab = _SummaryTab.summary;
     });
     _log('summary: generate requested');
-    await _maybeGenerateSummary();
-  }
-
-  Future<void> _maybeGenerateSummary() async {
-    if (!_summaryRequested || _loadingTranscript || _loadingTracks) return;
-    _summaryInFlight = true;
     try {
-      if (_selectedTrack == null) {
-        _log('summary: waiting for transcript');
-        await _ensureTranscriptLoaded();
-        return;
-      }
-
-      final text = _transcript ?? '';
-      if (text.isEmpty) {
-        if (_error == null) {
-          await _ensureTranscriptLoaded();
-          return;
-        }
-        if (mounted) {
-          setState(() {
-            _summaryError = 'No hay texto para resumir.';
-            _loadingSummary = false;
-            _summaryRequested = false;
-          });
-        }
-        return;
-      }
-
-      final settings = await _aiSettingsStore.load();
-      if (settings.apiKey.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _summaryError = 'Configura una clave API en el perfil.';
-            _loadingSummary = false;
-            _summaryRequested = false;
-          });
-        }
-        return;
-      }
-      if (settings.model.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _summaryError = 'Selecciona un modelo en el perfil.';
-            _loadingSummary = false;
-            _summaryRequested = false;
-          });
-        }
-        return;
-      }
-
-      final trackKey = _trackCacheKey(_selectedTrack!);
-      final summaryKey = '${settings.provider}:${settings.model}:${widget.video.id}:$trackKey';
-      final cachedSummary = await _summaryCache.get(summaryKey);
-      if (cachedSummary != null && cachedSummary.isNotEmpty) {
-        if (mounted) {
-          setState(() {
-            _loadingSummary = false;
-            _summaryRequested = false;
-          });
-          _applySummary(cachedSummary);
-        }
-        _log('summary: cache hit key=$summaryKey');
-        return;
-      }
-      final fallbackKey =
-          '${settings.provider}:${settings.model}:${widget.video.id}';
-      final fallbackSummary = await _summaryCache.get(fallbackKey);
-      if (fallbackSummary != null && fallbackSummary.isNotEmpty) {
-        if (mounted) {
-          setState(() {
-            _loadingSummary = false;
-            _summaryRequested = false;
-          });
-          _applySummary(fallbackSummary);
-        }
-        _log(
-          'summary: cache hit (video) key=$fallbackKey len=${fallbackSummary.length}',
-        );
-        return;
-      }
-
-      _log('summary: calling provider=${settings.provider} model=${settings.model}');
-      final summary = await _aiSummaryService.summarize(provider: settings.provider, model: settings.model, apiKey: settings.apiKey, transcript: text, title: widget.video.title, channel: widget.video.channelTitle);
-      if (summary.isNotEmpty) {
-        await _summaryCache.set(summaryKey, summary, _cacheTtl);
-        await _summaryCache.set(fallbackKey, summary, _cacheTtl);
-        _log('summary: cached key=$summaryKey len=${summary.length}');
-      }
+      final summary = await _ensureSummaryCached(
+        preferredTrack: _selectedTrack,
+        transcript: _transcript,
+      );
       if (mounted) {
         setState(() {
           _loadingSummary = false;
           _summaryRequested = false;
         });
-        _applySummary(summary);
+        if (summary != null && summary.isNotEmpty) {
+          _applySummary(summary);
+        } else {
+          _summaryError = 'No se pudo generar el resumen.';
+        }
       }
     } catch (error) {
       if (mounted) {
         setState(() {
-          _summaryError = 'No se pudo generar el resumen.\n$error';
+          _summaryError =
+              'No se pudo generar el resumen.\n${_formatSummaryError(error)}';
           _loadingSummary = false;
           _summaryRequested = false;
         });
       }
       _log('summary: error $error');
-    } finally {
-      _summaryInFlight = false;
-      if (_disposePending) {
-        _disposeAiService();
-      }
     }
   }
 
@@ -799,6 +864,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     _ttsChunkOffset = 0;
     _ttsChunkText = '';
     _ttsSequenceActive = false;
+    _ttsNormalizedSpeech = null;
   }
 
   void _resetTtsQueue() {
@@ -888,8 +954,9 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         questionsBuffer.write('. ');
         offset += 2;
       }
-      final text = 'Pregunta ${i + 1}: ${questions[i]}';
-      final start = offset;
+      final prefix = 'Pregunta ${i + 1}: ';
+      final text = '$prefix${questions[i]}';
+      final start = offset + prefix.length;
       questionsBuffer.write(text);
       offset += text.length;
       questionRanges.add(_QuestionRange(start, offset));
@@ -916,13 +983,12 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     }
     _resetTtsQueue();
     final mainSpeech = _buildMainSpeech();
-    final speechText =
-        _ttsSpeechText.isNotEmpty ? _ttsSpeechText : mainSpeech.text;
-    if (speechText.isEmpty) return;
+    final originalSpeech = mainSpeech.text;
+    if (originalSpeech.isEmpty) return;
     if (mounted) {
       setState(() {
         _ttsTarget = _TtsTarget.main;
-        _ttsSpeechText = speechText;
+        _applyNormalizedSpeech(originalSpeech);
         _ttsQuestionsStartOffset = mainSpeech.questionsOffset;
         _ttsQuestionsFromMainActive = false;
         _ttsQuestionRanges = mainSpeech.questionRanges;
@@ -935,7 +1001,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         }
       });
     }
-    await _startTtsSequence(speechText);
+    await _startTtsSequence(_ttsSpeechText);
   }
 
   Future<void> _toggleIntroTts() async {
@@ -952,14 +1018,12 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       await _stopTts();
     }
     _resetTtsQueue();
-    final speechText = _ttsSpeechText.isNotEmpty
-        ? _ttsSpeechText
-        : _summaryIntro!.trim();
-    if (speechText.isEmpty) return;
+    final originalSpeech = _summaryIntro!.trim();
+    if (originalSpeech.isEmpty) return;
     if (mounted) {
       setState(() {
         _ttsTarget = _TtsTarget.intro;
-        _ttsSpeechText = speechText;
+        _applyNormalizedSpeech(originalSpeech);
         if (!_ttsPaused) {
           _ttsHighlightStart = 0;
           _ttsIntroHighlightEnd = 0;
@@ -967,7 +1031,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         }
       });
     }
-    await _tts.speak(speechText);
+    await _tts.speak(_ttsSpeechText);
   }
 
   Future<void> _toggleQuestionsTts() async {
@@ -985,13 +1049,12 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     }
     _resetTtsQueue();
     final speech = _buildQuestionsSpeech();
-    final speechText =
-        _ttsSpeechText.isNotEmpty ? _ttsSpeechText : speech.speechText;
-    if (speechText.isEmpty) return;
+    final originalSpeech = speech.speechText;
+    if (originalSpeech.isEmpty) return;
     if (mounted) {
       setState(() {
         _ttsTarget = _TtsTarget.questions;
-        _ttsSpeechText = speechText;
+        _applyNormalizedSpeech(originalSpeech);
         _ttsQuestionsText = speech.questionText;
         _ttsQuestionsPrefixLength = speech.prefixLength;
         _ttsQuestionRanges = speech.ranges;
@@ -1002,7 +1065,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
         }
       });
     }
-    await _tts.speak(speechText);
+    await _tts.speak(_ttsSpeechText);
   }
 
   Future<void> _stopTts() async {
@@ -1022,7 +1085,56 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _ttsQuestionRanges = const [];
       _ttsQuestionHighlightEnds = const [];
       _ttsSpeechText = '';
+      _ttsNormalizedSpeech = null;
     });
+  }
+
+  void _applyNormalizedSpeech(String original) {
+    final normalized = _normalizeSpeech(original);
+    _ttsSpeechText = normalized.text;
+    _ttsNormalizedSpeech = normalized;
+  }
+
+  _NormalizedText _normalizeSpeech(String input) {
+    if (input.isEmpty) {
+      return const _NormalizedText('', <int>[]);
+    }
+    final buffer = StringBuffer();
+    final map = <int>[];
+    var inWhitespace = false;
+    for (var i = 0; i < input.length; i++) {
+      final char = input[i];
+      if (char.trim().isEmpty) {
+        if (buffer.isEmpty) {
+          continue;
+        }
+        if (!inWhitespace) {
+          buffer.write(' ');
+          map.add(i);
+          inWhitespace = true;
+        }
+        continue;
+      }
+      inWhitespace = false;
+      buffer.write(char);
+      map.add(i);
+    }
+    var normalized = buffer.toString();
+    if (normalized.endsWith(' ') && map.isNotEmpty) {
+      normalized = normalized.substring(0, normalized.length - 1);
+      map.removeLast();
+    }
+    return _NormalizedText(normalized, map);
+  }
+
+  int _mapNormalizedSpeechEnd(int normalizedEnd) {
+    final normalized = _ttsNormalizedSpeech;
+    if (normalized == null || normalized.map.isEmpty) {
+      return normalizedEnd;
+    }
+    if (normalizedEnd <= 0) return 0;
+    final index = (normalizedEnd - 1).clamp(0, normalized.map.length - 1);
+    return normalized.map[index] + 1;
   }
 
   Future<void> _openQuestion(String question) async {
@@ -1597,6 +1709,13 @@ class _QuestionRange {
 
   final int start;
   final int end;
+}
+
+class _NormalizedText {
+  const _NormalizedText(this.text, this.map);
+
+  final String text;
+  final List<int> map;
 }
 
 class _QuestionsSpeech {

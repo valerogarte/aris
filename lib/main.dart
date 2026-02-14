@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import 'auth/google_auth_service.dart';
-import 'screens/explore_screen.dart';
+import 'screens/history_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/lists_screen.dart';
 import 'screens/profile_screen.dart';
@@ -218,9 +218,13 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       (
-        title: 'Explorar',
-        icon: Icons.explore,
-        body: const ExploreScreen(),
+        title: 'Historial',
+        icon: Icons.history,
+        body: HistoryScreen(
+          accessToken: widget.accessToken,
+          quotaTracker: _quotaTracker,
+          aiCostTracker: _aiCostTracker,
+        ),
       ),
       (
         title: 'Canales',

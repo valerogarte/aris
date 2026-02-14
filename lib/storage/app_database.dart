@@ -10,8 +10,14 @@ class AppDatabase {
   static final AppDatabase instance = AppDatabase._();
 
   static const String _dbName = 'aris.db';
-  static const int _dbVersion = 1;
+  static const int _dbVersion = 3;
   static const String _table = 'kv';
+  static const String _tableAiCostDaily = 'ai_cost_daily';
+  static const String _tableAiCostBreakdown = 'ai_cost_breakdown';
+  static const String _tableQuotaDaily = 'youtube_quota_daily';
+  static const String _tableQuotaBreakdown = 'youtube_quota_breakdown';
+  static const String _tableChannels = 'channels';
+  static const String _tableHistory = 'history_videos';
 
   static const List<String> _migrateKeys = [
     'ai_provider_settings',
@@ -58,13 +64,100 @@ class AppDatabase {
       path,
       version: _dbVersion,
       onCreate: (db, _) async {
-        await db.execute(
-          'CREATE TABLE $_table (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
-        );
+        await _createSchema(db);
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await _createSchema(db);
+        } else if (oldVersion < 3) {
+          await _createSchema(db);
+        }
       },
     );
     await _migrateFromSharedPreferencesIfNeeded(_db!);
+    await _migrateKvToStructuredTablesIfNeeded(_db!);
     return _db!;
+  }
+
+  Future<Database> open() async {
+    return _openDb();
+  }
+
+  Future<void> _createSchema(Database db) async {
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_table (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_tableAiCostDaily ('
+      'date TEXT PRIMARY KEY, '
+      'micro_cost INTEGER NOT NULL'
+      ')',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_tableAiCostBreakdown ('
+      'date TEXT NOT NULL, '
+      'label TEXT NOT NULL, '
+      'micro_cost INTEGER NOT NULL, '
+      'PRIMARY KEY(date, label)'
+      ')',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_ai_cost_breakdown_date '
+      'ON $_tableAiCostBreakdown(date)',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_tableQuotaDaily ('
+      'date TEXT PRIMARY KEY, '
+      'used INTEGER NOT NULL'
+      ')',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_tableQuotaBreakdown ('
+      'date TEXT NOT NULL, '
+      'label TEXT NOT NULL, '
+      'units INTEGER NOT NULL, '
+      'PRIMARY KEY(date, label)'
+      ')',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_quota_breakdown_date '
+      'ON $_tableQuotaBreakdown(date)',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_tableChannels ('
+      'channel_id TEXT PRIMARY KEY, '
+      'title TEXT NOT NULL, '
+      'description TEXT, '
+      'thumbnail_url TEXT, '
+      'published_at TEXT, '
+      'custom_url TEXT, '
+      'country TEXT, '
+      'uploads_playlist_id TEXT, '
+      'subscriber_count INTEGER, '
+      'view_count INTEGER, '
+      'video_count INTEGER, '
+      'raw_json TEXT, '
+      'updated_at INTEGER NOT NULL'
+      ')',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_tableHistory ('
+      'video_id TEXT PRIMARY KEY, '
+      'title TEXT NOT NULL, '
+      'channel_id TEXT, '
+      'channel_title TEXT, '
+      'thumbnail_url TEXT, '
+      'published_at TEXT, '
+      'duration_seconds INTEGER, '
+      'watched_at INTEGER, '
+      'summary_requested_at INTEGER, '
+      'last_activity_at INTEGER NOT NULL'
+      ')',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_history_activity '
+      'ON $_tableHistory(last_activity_at)',
+    );
   }
 
   Future<void> _migrateFromSharedPreferencesIfNeeded(Database db) async {
@@ -100,6 +193,152 @@ class AppDatabase {
         await prefs.remove(key);
       }
     }
+  }
+
+  Future<void> _migrateKvToStructuredTablesIfNeeded(Database db) async {
+    final rows = await db.query(
+      _table,
+      columns: const ['key', 'value'],
+      where: 'key IN (?, ?, ?)',
+      whereArgs: const [
+        'ai_cost_state',
+        'ai_cost_history',
+        'youtube_quota_state',
+      ],
+    );
+    if (rows.isEmpty) return;
+
+    String? costState;
+    String? costHistory;
+    String? quotaState;
+    for (final row in rows) {
+      final key = row['key'] as String?;
+      final value = row['value'] as String?;
+      if (key == 'ai_cost_state') costState = value;
+      if (key == 'ai_cost_history') costHistory = value;
+      if (key == 'youtube_quota_state') quotaState = value;
+    }
+
+    final batch = db.batch();
+
+    if (costState != null && costState.isNotEmpty) {
+      _insertAiCostFromJson(batch, costState);
+      batch.delete(_table, where: 'key = ?', whereArgs: ['ai_cost_state']);
+    }
+
+    if (costHistory != null && costHistory.isNotEmpty) {
+      _insertAiCostHistoryFromJson(batch, costHistory);
+      batch.delete(_table, where: 'key = ?', whereArgs: ['ai_cost_history']);
+    }
+
+    if (quotaState != null && quotaState.isNotEmpty) {
+      _insertQuotaFromJson(batch, quotaState);
+      batch.delete(_table, where: 'key = ?', whereArgs: ['youtube_quota_state']);
+    }
+
+    await batch.commit(noResult: true);
+  }
+
+  void _insertAiCostFromJson(Batch batch, String raw) {
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      final date = (decoded['date'] as String?) ?? '';
+      if (date.isEmpty) return;
+      final microCost = (decoded['microCost'] as num?)?.toInt() ?? 0;
+      batch.insert(
+        _tableAiCostDaily,
+        {'date': date, 'micro_cost': microCost},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      batch.delete(
+        _tableAiCostBreakdown,
+        where: 'date = ?',
+        whereArgs: [date],
+      );
+      final breakdown =
+          (decoded['breakdown'] as Map<String, dynamic>?) ?? {};
+      for (final entry in breakdown.entries) {
+        final value = (entry.value as num?)?.toInt() ?? 0;
+        batch.insert(
+          _tableAiCostBreakdown,
+          {
+            'date': date,
+            'label': entry.key,
+            'micro_cost': value,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    } catch (_) {}
+  }
+
+  void _insertAiCostHistoryFromJson(Batch batch, String raw) {
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      for (final entry in decoded.entries) {
+        final date = entry.key;
+        final value = entry.value;
+        if (value is! Map<String, dynamic>) continue;
+        final microCost = (value['microCost'] as num?)?.toInt() ?? 0;
+        batch.insert(
+          _tableAiCostDaily,
+          {'date': date, 'micro_cost': microCost},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        batch.delete(
+          _tableAiCostBreakdown,
+          where: 'date = ?',
+          whereArgs: [date],
+        );
+        final breakdown =
+            (value['breakdown'] as Map<String, dynamic>?) ?? {};
+        for (final breakdownEntry in breakdown.entries) {
+          final amount = (breakdownEntry.value as num?)?.toInt() ?? 0;
+          batch.insert(
+            _tableAiCostBreakdown,
+            {
+              'date': date,
+              'label': breakdownEntry.key,
+              'micro_cost': amount,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _insertQuotaFromJson(Batch batch, String raw) {
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      final date = (decoded['date'] as String?) ?? '';
+      if (date.isEmpty) return;
+      final used = (decoded['used'] as num?)?.toInt() ?? 0;
+      batch.insert(
+        _tableQuotaDaily,
+        {'date': date, 'used': used},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      batch.delete(
+        _tableQuotaBreakdown,
+        where: 'date = ?',
+        whereArgs: [date],
+      );
+      final breakdown =
+          (decoded['breakdown'] as Map<String, dynamic>?) ?? {};
+      for (final entry in breakdown.entries) {
+        final units = (entry.value as num?)?.toInt() ?? 0;
+        batch.insert(
+          _tableQuotaBreakdown,
+          {
+            'date': date,
+            'label': entry.key,
+            'units': units,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    } catch (_) {}
   }
 
   bool _shouldMigrateKey(String key) {

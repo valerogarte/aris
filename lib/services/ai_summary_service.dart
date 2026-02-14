@@ -17,15 +17,25 @@ class AiSummaryService {
   final AiCostTracker? _costTracker;
 
   static const Map<String, _ModelPricing> _pricingByModel = {
-    'gpt-5.2': _ModelPricing(1.75, 14.0),
-    'gpt-5-mini': _ModelPricing(0.25, 2.0),
+    'gpt-5-mini': _ModelPricing(0.25, 2.0, cachedInputPerMillion: 0.025),
+    'gpt-5-nano': _ModelPricing(0.05, 0.4, cachedInputPerMillion: 0.005),
+    'gpt-4.1-mini': _ModelPricing(0.4, 1.6, cachedInputPerMillion: 0.1),
+    'gpt-4.1-nano': _ModelPricing(0.1, 0.4, cachedInputPerMillion: 0.025),
+    'gpt-4o-mini': _ModelPricing(0.15, 0.6, cachedInputPerMillion: 0.075),
     'gemini-3-pro-preview': _ModelPricing(2.0, 12.0),
     'gemini-3-flash-preview': _ModelPricing(0.5, 3.0),
+    'gemini-2.5-pro': _ModelPricing(1.25, 10.0),
+    'gemini-2.5-flash': _ModelPricing(0.3, 2.5),
+    'gemini-2.5-flash-lite': _ModelPricing(0.1, 0.4),
     'claude-opus-4-6': _ModelPricing(5.0, 25.0),
-    'claude-sonnet-4-5-20250929': _ModelPricing(3.0, 15.0),
-    'claude-haiku-4-5-20251001': _ModelPricing(1.0, 5.0),
+    'claude-sonnet-4-5': _ModelPricing(3.0, 15.0),
+    'claude-haiku-4-5': _ModelPricing(1.0, 5.0),
     'grok-4': _ModelPricing(3.0, 15.0),
+    'grok-4-1-fast-reasoning': _ModelPricing(0.2, 0.5),
     'grok-4-1-fast-non-reasoning': _ModelPricing(0.2, 0.5),
+    'grok-4-fast-reasoning': _ModelPricing(0.2, 0.5),
+    'grok-4-fast-non-reasoning': _ModelPricing(0.2, 0.5),
+    'grok-code-fast-1': _ModelPricing(0.2, 1.5),
   };
 
   Future<String> summarize({
@@ -170,9 +180,19 @@ class AiSummaryService {
   void _recordCostFromOpenAi(String model, Map<String, dynamic> data) {
     final usage = data['usage'] as Map<String, dynamic>?;
     final inputTokens = (usage?['prompt_tokens'] as num?)?.toInt() ?? 0;
+    var cachedInputTokens = 0;
+    final details = usage?['prompt_tokens_details'];
+    if (details is Map<String, dynamic>) {
+      cachedInputTokens = (details['cached_tokens'] as num?)?.toInt() ?? 0;
+    }
     final outputTokens =
         (usage?['completion_tokens'] as num?)?.toInt() ?? 0;
-    _recordCost(model, inputTokens: inputTokens, outputTokens: outputTokens);
+    _recordCost(
+      model,
+      inputTokens: inputTokens,
+      cachedInputTokens: cachedInputTokens,
+      outputTokens: outputTokens,
+    );
   }
 
   void _recordCostFromGemini(String model, Map<String, dynamic> data) {
@@ -202,12 +222,19 @@ class AiSummaryService {
     String model, {
     required int inputTokens,
     required int outputTokens,
+    int cachedInputTokens = 0,
   }) {
     if (_costTracker == null) return;
     if (inputTokens <= 0 && outputTokens <= 0) return;
     final pricing = _pricingByModel[model.trim().toLowerCase()];
     if (pricing == null) return;
-    final microCost = ((inputTokens * pricing.inputPerMillion) +
+    final safeCached =
+        cachedInputTokens.clamp(0, inputTokens);
+    final uncachedInput = inputTokens - safeCached;
+    final cachedRate =
+        pricing.cachedInputPerMillion ?? pricing.inputPerMillion;
+    final microCost = ((uncachedInput * pricing.inputPerMillion) +
+            (safeCached * cachedRate) +
             (outputTokens * pricing.outputPerMillion))
         .round();
     if (microCost <= 0) return;
@@ -402,8 +429,13 @@ class AiSummaryService {
 }
 
 class _ModelPricing {
-  const _ModelPricing(this.inputPerMillion, this.outputPerMillion);
+  const _ModelPricing(
+    this.inputPerMillion,
+    this.outputPerMillion, {
+    this.cachedInputPerMillion,
+  });
 
   final double inputPerMillion;
   final double outputPerMillion;
+  final double? cachedInputPerMillion;
 }

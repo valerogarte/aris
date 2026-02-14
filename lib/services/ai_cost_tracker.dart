@@ -1,13 +1,11 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
+import 'package:sqflite/sqflite.dart';
+
 import '../storage/app_database.dart';
 
 class AiCostTracker extends ChangeNotifier {
   AiCostTracker({this.currencySymbol = '€'});
 
-  static const String _storageKey = 'ai_cost_state';
-  static const String _historyKey = 'ai_cost_history';
   static const int _maxHistoryDays = 90;
 
   final String currencySymbol;
@@ -29,58 +27,18 @@ class AiCostTracker extends ChangeNotifier {
 
   Future<void> load() async {
     if (_loaded) return;
-    final raw = await AppDatabase.instance.getString(_storageKey);
-    final historyRaw = await AppDatabase.instance.getString(_historyKey);
     final today = _todayKey();
-
-    _history = _decodeHistory(historyRaw);
-
-    if (raw != null && raw.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(raw) as Map<String, dynamic>;
-        final storedDate = (decoded['date'] as String?) ?? today;
-        final storedCost = (decoded['microCost'] as num?)?.toInt() ?? 0;
-        final storedBreakdown =
-            decoded['breakdown'] as Map<String, dynamic>? ?? {};
-        if (storedDate == today) {
-          _microCost = storedCost;
-          _breakdown = storedBreakdown.map(
-            (key, value) => MapEntry(
-              key,
-              (value as num?)?.toInt() ?? 0,
-            ),
-          );
-        } else {
-          _storeHistoryEntry(
-            storedDate,
-            storedCost,
-            storedBreakdown.map(
-              (key, value) => MapEntry(
-                key,
-                (value as num?)?.toInt() ?? 0,
-              ),
-            ),
-          );
-          _microCost = 0;
-          _breakdown = {};
-        }
-      } catch (_) {
-        _microCost = 0;
-        _breakdown = {};
-      }
-    }
-
+    await _loadFromDatabase(today);
     _dateKey = today;
     _loaded = true;
-    _pruneHistory();
-    await _save();
+    await _pruneHistory();
     notifyListeners();
   }
 
   Future<void> addCostMicro(int microCost, {String? label}) async {
     if (microCost <= 0) return;
     await _ensureLoaded();
-    _rolloverIfNeeded();
+    await _rolloverIfNeeded();
     _microCost += microCost;
     if (label != null && label.isNotEmpty) {
       _breakdown[label] = (_breakdown[label] ?? 0) + microCost;
@@ -129,32 +87,42 @@ class AiCostTracker extends ChangeNotifier {
     }
   }
 
-  void _rolloverIfNeeded() {
+  Future<void> _rolloverIfNeeded() async {
     final today = _todayKey();
     if (_dateKey != today) {
-      if (_microCost > 0 || _breakdown.isNotEmpty) {
-        _storeHistoryEntry(_dateKey, _microCost, _breakdown);
-      }
       _dateKey = today;
-      _microCost = 0;
-      _breakdown = {};
+      await _loadFromDatabase(today);
     }
   }
 
   Future<void> _save() async {
-    final data = {
-      'date': _dateKey,
-      'microCost': _microCost,
-      'breakdown': _breakdown,
-    };
-    await AppDatabase.instance.setString(
-      _storageKey,
-      jsonEncode(data),
-    );
-    await AppDatabase.instance.setString(
-      _historyKey,
-      jsonEncode(_encodeHistory()),
-    );
+    final db = await AppDatabase.instance.open();
+    await db.transaction((txn) async {
+      await txn.insert(
+        'ai_cost_daily',
+        {'date': _dateKey, 'micro_cost': _microCost},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      await txn.delete(
+        'ai_cost_breakdown',
+        where: 'date = ?',
+        whereArgs: [_dateKey],
+      );
+      for (final entry in _breakdown.entries) {
+        await txn.insert(
+          'ai_cost_breakdown',
+          {
+            'date': _dateKey,
+            'label': entry.key,
+            'micro_cost': entry.value,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+
+    _storeHistoryEntry(_dateKey, _microCost, _breakdown);
+    await _pruneHistory();
   }
 
   static String _todayKey() {
@@ -186,50 +154,65 @@ class AiCostTracker extends ChangeNotifier {
     );
   }
 
-  Map<String, _DailyCost> _decodeHistory(String? raw) {
-    if (raw == null || raw.isEmpty) return {};
-    try {
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      final result = <String, _DailyCost>{};
-      for (final entry in decoded.entries) {
-        final value = entry.value;
-        if (value is Map<String, dynamic>) {
-          final microCost = (value['microCost'] as num?)?.toInt() ?? 0;
-          final breakdownRaw =
-              value['breakdown'] as Map<String, dynamic>? ?? {};
-          final breakdown = breakdownRaw.map(
-            (key, val) => MapEntry(key, (val as num?)?.toInt() ?? 0),
-          );
-          result[entry.key] = _DailyCost(
-            microCost: microCost,
-            breakdown: breakdown,
-          );
-        }
-      }
-      return result;
-    } catch (_) {
-      return {};
+  Future<void> _loadFromDatabase(String today) async {
+    final db = await AppDatabase.instance.open();
+    final dailyRows = await db.query('ai_cost_daily');
+    final breakdownRows = await db.query('ai_cost_breakdown');
+
+    final breakdownByDate = <String, Map<String, int>>{};
+    for (final row in breakdownRows) {
+      final date = row['date'] as String?;
+      final label = row['label'] as String?;
+      final value = row['micro_cost'] as int?;
+      if (date == null || label == null || value == null) continue;
+      final map = breakdownByDate.putIfAbsent(date, () => {});
+      map[label] = value;
+    }
+
+    final history = <String, _DailyCost>{};
+    for (final row in dailyRows) {
+      final date = row['date'] as String?;
+      if (date == null || date.isEmpty) continue;
+      final microCost = row['micro_cost'] as int? ?? 0;
+      final breakdown = breakdownByDate[date] ?? {};
+      history[date] = _DailyCost(
+        microCost: microCost,
+        breakdown: Map<String, int>.from(breakdown),
+      );
+    }
+
+    _history = history;
+    final todayData = _history[today];
+    if (todayData != null) {
+      _microCost = todayData.microCost;
+      _breakdown = Map<String, int>.from(todayData.breakdown);
+    } else {
+      _microCost = 0;
+      _breakdown = {};
     }
   }
 
-  Map<String, dynamic> _encodeHistory() {
-    return _history.map(
-      (key, value) => MapEntry(
-        key,
-        {
-          'microCost': value.microCost,
-          'breakdown': value.breakdown,
-        },
-      ),
-    );
-  }
-
-  void _pruneHistory() {
+  Future<void> _pruneHistory() async {
     if (_history.length <= _maxHistoryDays) return;
     final keys = _history.keys.toList()..sort();
     final removeCount = keys.length - _maxHistoryDays;
-    for (var i = 0; i < removeCount; i += 1) {
-      _history.remove(keys[i]);
+    if (removeCount <= 0) return;
+    final toRemove = keys.take(removeCount).toList();
+    for (final key in toRemove) {
+      _history.remove(key);
+    }
+    final db = await AppDatabase.instance.open();
+    for (final date in toRemove) {
+      await db.delete(
+        'ai_cost_breakdown',
+        where: 'date = ?',
+        whereArgs: [date],
+      );
+      await db.delete(
+        'ai_cost_daily',
+        where: 'date = ?',
+        whereArgs: [date],
+      );
     }
   }
 }
