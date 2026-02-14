@@ -21,6 +21,43 @@ import '../services/ai_cost_tracker.dart';
 import '../ui/channel_avatar.dart';
 import 'channel_videos_screen.dart';
 
+String formatRelativeTime(DateTime date) {
+  final now = DateTime.now().toLocal();
+  final target = date.toLocal();
+  var diff = now.difference(target);
+  if (diff.isNegative) {
+    diff = Duration.zero;
+  }
+  final minutes = diff.inMinutes;
+  if (minutes < 60) {
+    if (minutes <= 1) return 'hace 1 minuto';
+    return 'hace $minutes minutos';
+  }
+  final hours = diff.inHours;
+  if (hours < 24) {
+    if (hours == 1) return 'hace 1 hora';
+    return 'hace $hours horas';
+  }
+  final days = diff.inDays;
+  if (days < 7) {
+    if (days == 1) return 'hace 1 día';
+    return 'hace $days días';
+  }
+  if (days < 30) {
+    final weeks = (days / 7).floor();
+    if (weeks <= 1) return 'hace 1 semana';
+    return 'hace $weeks semanas';
+  }
+  if (days < 365) {
+    final months = (days / 30).floor();
+    if (months <= 1) return 'hace 1 mes';
+    return 'hace $months meses';
+  }
+  final years = (days / 365).floor();
+  if (years <= 1) return 'hace 1 año';
+  return 'hace $years años';
+}
+
 class VideoDetailScreen extends StatefulWidget {
   const VideoDetailScreen({
     super.key,
@@ -96,6 +133,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   List<_QuestionRange> _ttsQuestionRanges = const [];
   List<int> _ttsQuestionHighlightEnds = const [];
   _NormalizedText? _ttsNormalizedSpeech;
+  String _aiModelLabel = '';
   String? _summaryIntro;
   String? _summaryMain;
   List<String> _summaryQuestions = const [];
@@ -359,6 +397,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
 
   Future<void> _configureTts() async {
     final settings = await _aiSettingsStore.load();
+    final modelLabel = settings.model.trim();
     final voiceName = settings.narratorVoiceName;
     final voiceLocale = settings.narratorVoiceLocale;
     if (voiceLocale.isNotEmpty) {
@@ -532,6 +571,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
     if (mounted) {
       setState(() {
         _ttsReady = true;
+        _aiModelLabel = modelLabel;
       });
     }
   }
@@ -1434,6 +1474,16 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                 label: const Text('Generar'),
               ),
             ),
+            if (_aiModelLabel.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                'Modelo: $_aiModelLabel',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: Colors.white54),
+              ),
+            ],
             if (preparingContext) ...[
               const SizedBox(height: 10),
               Row(
@@ -1447,6 +1497,27 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                   Expanded(
                     child: Text(
                       'Preparando la transcripción para dar contexto a la IA.',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: Colors.white70),
+                    ),
+                  ),
+                ],
+              ),
+            ] else if (_transcript != null && _transcript!.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.check_circle,
+                    color: Color(0xFF3DDC84),
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Transcripción generada.',
                       style: Theme.of(context)
                           .textTheme
                           .bodySmall
@@ -1675,6 +1746,15 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
+    final theme = Theme.of(context);
+    final subtitleStyle = theme.textTheme.bodySmall?.copyWith(
+      color: Colors.white70,
+    );
+    final hasSummaryIndicator =
+        (_summary != null && _summary!.trim().isNotEmpty) ||
+        (_summaryMain != null && _summaryMain!.isNotEmpty) ||
+        (_summaryIntro != null && _summaryIntro!.isNotEmpty) ||
+        _summaryQuestions.isNotEmpty;
     final screenSize = mediaQuery.size;
     final playerWidth = screenSize.width;
     final targetHeight = playerWidth * 9 / 16;
@@ -1700,7 +1780,7 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1734,31 +1814,63 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                   ),
                   const SizedBox(height: 16),
                 ],
-                Row(
-                  children: [
-                    InkWell(
-                      onTap: _openChannelVideos,
-                      borderRadius: BorderRadius.circular(28),
-                      child: ChannelAvatar(
-                        name: widget.video.channelTitle,
-                        imageUrl: _channelAvatarUrl,
-                        size: 44,
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(0, 10, 0, 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Column(
+                        children: [
+                          InkWell(
+                            onTap: _openChannelVideos,
+                            customBorder: const CircleBorder(),
+                            child: ChannelAvatar(
+                              name: widget.video.channelTitle,
+                              imageUrl: _channelAvatarUrl,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          if (hasSummaryIndicator)
+                            const Icon(
+                              Icons.auto_fix_high,
+                              color: Color(0xFFFA1021),
+                              size: 16,
+                            ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        widget.video.channelTitle,
-                        style: Theme.of(context).textTheme.titleMedium,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.video.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodyLarge?.copyWith(
+                                color: Colors.white,
+                                height: 1.3,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '${widget.video.channelTitle} • ${formatRelativeTime(widget.video.publishedAt)}',
+                              style: subtitleStyle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      const Icon(
+                        Icons.more_vert,
+                        color: Colors.white54,
+                        size: 20,
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 12),
-                Text(widget.video.title, style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 16),
                 _buildSummarySection(context),
               ],
             ),

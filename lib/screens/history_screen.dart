@@ -69,6 +69,8 @@ class HistoryScreen extends StatefulWidget {
 }
 
 class _HistoryScreenState extends State<HistoryScreen> {
+  static const int _pageSize = 20;
+
   final HistoryStore _historyStore = HistoryStore();
   final ChannelStore _channelStore = ChannelStore();
   final ExpiringCacheStore _avatarCache =
@@ -76,6 +78,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
   List<HistoryVideo> _items = const [];
   Map<String, String> _channelAvatars = {};
   bool _loading = true;
+  bool _loadingMore = false;
+  bool _hasMore = true;
+  int _nextOffset = 0;
+  final ScrollController _scrollController = ScrollController();
   VoidCallback? _tabListener;
 
   List<_HistoryListEntry> _buildEntries(List<HistoryVideo> items) {
@@ -105,7 +111,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   void initState() {
     super.initState();
-    _loadHistory();
+    _scrollController.addListener(_handleScroll);
+    _loadHistory(reset: true);
     _attachTabListener();
   }
 
@@ -119,17 +126,53 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
-  Future<void> _loadHistory() async {
-    setState(() {
-      _loading = true;
-    });
-    final items = await _historyStore.fetchAll();
+  void _handleScroll() {
+    if (_loading || _loadingMore || !_hasMore) return;
+    if (!_scrollController.hasClients) return;
+    if (_scrollController.position.extentAfter < 300) {
+      _loadHistory();
+    }
+  }
+
+  Future<void> _loadHistory({bool reset = false}) async {
+    if (reset) {
+      setState(() {
+        _loading = true;
+        _loadingMore = false;
+        _hasMore = true;
+        _nextOffset = 0;
+        _items = const [];
+        _channelAvatars = {};
+      });
+    } else {
+      if (_loading || _loadingMore || !_hasMore) return;
+      setState(() {
+        _loadingMore = true;
+      });
+    }
+
+    final items = await _historyStore.fetchPage(
+      limit: _pageSize,
+      offset: _nextOffset,
+    );
+    _nextOffset += items.length;
     final avatarMap = await _loadChannelAvatars(items);
     if (!mounted) return;
+    final existingIds = _items.map((item) => item.videoId).toSet();
+    final newItems = items
+        .where((item) => !existingIds.contains(item.videoId))
+        .toList();
     setState(() {
-      _items = items;
-      _channelAvatars = avatarMap;
+      _items = reset ? newItems : [..._items, ...newItems];
+      _channelAvatars = {
+        ..._channelAvatars,
+        ...avatarMap,
+      };
       _loading = false;
+      _loadingMore = false;
+      if (items.length < _pageSize) {
+        _hasMore = false;
+      }
     });
   }
 
@@ -139,7 +182,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     _tabListener = () {
       if (!mounted) return;
       if (listenable.value == widget.tabIndex) {
-        _loadHistory();
+        _loadHistory(reset: true);
       }
     };
     listenable.addListener(_tabListener!);
@@ -154,6 +197,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   void dispose() {
     _detachTabListener(widget.tabIndexListenable);
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -205,7 +249,27 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
           ),
         )
-        .then((_) => _loadHistory());
+        .then((_) => _loadHistory(reset: true));
+  }
+
+  Future<void> _deleteItem(HistoryVideo item) async {
+    final currentItems = _items;
+    setState(() {
+      _items = _items
+          .where((entry) => entry.videoId != item.videoId)
+          .toList();
+    });
+    try {
+      await _historyStore.deleteByVideoId(item.videoId);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _items = currentItems;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo borrar del historial.\n$error')),
+      );
+    }
   }
 
   @override
@@ -225,11 +289,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
     final entries = _buildEntries(_items);
     return RefreshIndicator(
-      onRefresh: _loadHistory,
+      onRefresh: () => _loadHistory(reset: true),
       child: ListView.separated(
+        controller: _scrollController,
         padding: const EdgeInsets.only(bottom: 8),
-        itemCount: entries.length,
+        itemCount: entries.length + (_loadingMore ? 1 : 0),
         separatorBuilder: (context, index) {
+          if (index >= entries.length - 1) {
+            return const SizedBox(height: 0);
+          }
           final current = entries[index];
           final next = entries[index + 1];
           if (!current.isHeader && !next.isHeader) {
@@ -241,6 +309,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
           return const SizedBox(height: 16);
         },
         itemBuilder: (context, index) {
+          if (_loadingMore && index == entries.length) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
           final entry = entries[index];
           if (entry.isHeader) {
             return Padding(
@@ -256,6 +330,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
             item: item,
             channelAvatarUrl: _channelAvatars[item.channelId] ?? '',
             onTap: () => _openVideo(item),
+            onDelete: () => _deleteItem(item),
           );
         },
       ),
@@ -277,11 +352,13 @@ class _HistoryCard extends StatelessWidget {
     required this.item,
     required this.channelAvatarUrl,
     required this.onTap,
+    required this.onDelete,
   });
 
   final HistoryVideo item;
   final String channelAvatarUrl;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -361,10 +438,11 @@ class _HistoryCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                const Icon(
-                  Icons.history,
+                IconButton(
+                  onPressed: onDelete,
+                  icon: const Icon(Icons.delete_outline),
                   color: Colors.white54,
-                  size: 20,
+                  tooltip: 'Eliminar del historial',
                 ),
               ],
             ),

@@ -45,6 +45,30 @@ class YouTubeVideo {
     );
   }
 
+  factory YouTubeVideo.fromSearchItem(
+    Map<String, dynamic> item, {
+    int? durationSeconds,
+  }) {
+    final idMap = (item['id'] as Map<String, dynamic>?) ??
+        const <String, dynamic>{};
+    final snippet = (item['snippet'] as Map<String, dynamic>?) ??
+        const <String, dynamic>{};
+    final thumbnails = (snippet['thumbnails'] as Map<String, dynamic>?) ??
+        const <String, dynamic>{};
+
+    return YouTubeVideo(
+      id: (idMap['videoId'] as String?) ?? '',
+      title: (snippet['title'] as String?) ?? 'Sin título',
+      channelTitle: (snippet['channelTitle'] as String?) ?? 'Canal',
+      channelId: (snippet['channelId'] as String?) ?? '',
+      publishedAt:
+          DateTime.tryParse((snippet['publishedAt'] as String?) ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      thumbnailUrl: _pickThumbnail(thumbnails),
+      durationSeconds: durationSeconds,
+    );
+  }
+
   static String _pickThumbnail(Map<String, dynamic> thumbnails) {
     for (final key in ['maxres', 'high', 'medium', 'default']) {
       final data = thumbnails[key] as Map<String, dynamic>?;

@@ -6,6 +6,7 @@ import 'screens/history_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/lists_screen.dart';
 import 'screens/profile_screen.dart';
+import 'screens/search_screen.dart';
 import 'screens/explore_screen.dart';
 import 'screens/videos_screen.dart';
 import 'services/ai_cost_tracker.dart';
@@ -265,6 +266,22 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           _AiCostChip(tracker: _aiCostTracker),
           _QuotaChip(tracker: _quotaTracker),
+          IconButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => SearchScreen(
+                    accessToken: widget.accessToken,
+                    quotaTracker: _quotaTracker,
+                    aiCostTracker: _aiCostTracker,
+                    onRefreshToken: widget.onRefreshToken,
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.search),
+            tooltip: 'Buscar',
+          ),
           IconButton(
             onPressed: () {
               Navigator.of(context).push(

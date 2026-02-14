@@ -28,6 +28,31 @@ class HistoryStore {
     return rows.map(_mapRow).toList();
   }
 
+  Future<List<HistoryVideo>> fetchPage({
+    required int limit,
+    required int offset,
+  }) async {
+    final db = await AppDatabase.instance.open();
+    final rows = await db.query(
+      _table,
+      orderBy: 'last_activity_at DESC',
+      limit: limit,
+      offset: offset,
+    );
+    return rows.map(_mapRow).toList();
+  }
+
+  Future<void> deleteByVideoId(String videoId) async {
+    final trimmed = videoId.trim();
+    if (trimmed.isEmpty) return;
+    final db = await AppDatabase.instance.open();
+    await db.delete(
+      _table,
+      where: 'video_id = ?',
+      whereArgs: [trimmed],
+    );
+  }
+
   Future<void> _upsert(
     YouTubeVideo video, {
     DateTime? watchedAt,

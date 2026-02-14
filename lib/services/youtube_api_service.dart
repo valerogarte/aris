@@ -23,6 +23,16 @@ class YouTubeChannelVideosPage {
   final String? uploadsPlaylistId;
 }
 
+class YouTubeSearchPage {
+  const YouTubeSearchPage({
+    required this.videos,
+    required this.nextPageToken,
+  });
+
+  final List<YouTubeVideo> videos;
+  final String? nextPageToken;
+}
+
 class YouTubeApiService {
   YouTubeApiService({
     required this.accessToken,
@@ -34,6 +44,7 @@ class YouTubeApiService {
   static const int _unitsCaptionsList = 50;
   static const int _unitsCaptionsDownload = 200;
   static const int _unitsVideosList = 1;
+  static const int _unitsSearchList = 100;
 
   final String accessToken;
   final http.Client _client;
@@ -95,6 +106,86 @@ class YouTubeApiService {
         ? ordered.take(maxChannels).toList()
         : ordered;
     return _fetchLatestVideosForChannels(limited);
+  }
+
+  Future<YouTubeSearchPage> searchVideos({
+    required String query,
+    String? pageToken,
+    int maxResults = 20,
+  }) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      return const YouTubeSearchPage(
+        videos: <YouTubeVideo>[],
+        nextPageToken: null,
+      );
+    }
+
+    final params = <String, String>{
+      'part': 'snippet',
+      'q': trimmed,
+      'type': 'video',
+      'maxResults': maxResults.clamp(1, 50).toString(),
+    };
+    if (pageToken != null && pageToken.isNotEmpty) {
+      params['pageToken'] = pageToken;
+    }
+
+    final data = await _get(
+      'search',
+      params,
+      units: _unitsSearchList,
+      label: 'search.list',
+    );
+
+    final items = (data['items'] as List?) ?? const [];
+    if (items.isEmpty) {
+      return YouTubeSearchPage(
+        videos: const <YouTubeVideo>[],
+        nextPageToken: data['nextPageToken'] as String?,
+      );
+    }
+
+    final ids = <String>[];
+    final channelIds = <String>[];
+    for (final item in items) {
+      if (item is! Map<String, dynamic>) continue;
+      final idMap = item['id'] as Map<String, dynamic>?;
+      final videoId = idMap?['videoId'] as String?;
+      if (videoId != null && videoId.isNotEmpty) {
+        ids.add(videoId);
+      }
+      final snippet = item['snippet'] as Map<String, dynamic>?;
+      final channelId = snippet?['channelId'] as String?;
+      if (channelId != null && channelId.isNotEmpty) {
+        channelIds.add(channelId);
+      }
+    }
+
+    if (channelIds.isNotEmpty) {
+      await _storeChannelsInfo(channelIds);
+    }
+
+    final durations = await _fetchVideoDurations(ids);
+    final videos = <YouTubeVideo>[];
+    for (final item in items) {
+      if (item is! Map<String, dynamic>) continue;
+      final idMap = item['id'] as Map<String, dynamic>?;
+      final videoId = idMap?['videoId'] as String?;
+      if (videoId == null || videoId.isEmpty) continue;
+      final video = YouTubeVideo.fromSearchItem(
+        item,
+        durationSeconds: durations[videoId],
+      );
+      if (video.id.isNotEmpty) {
+        videos.add(video);
+      }
+    }
+
+    return YouTubeSearchPage(
+      videos: videos,
+      nextPageToken: data['nextPageToken'] as String?,
+    );
   }
 
   Future<Map<String, String>> fetchChannelThumbnails(

@@ -42,22 +42,6 @@ flowchart TD
 
 La app usa **SQLite** con tablas dedicadas para costes, cuota y canales, además de un almacén clave‑valor para configuración y cachés. Toda la información se guarda en `aris.db`. El detalle de tablas y campos está en `docs/bbdd.md`.
 
-## Backups
-
-Los backups por SFTP exportan e importan el **archivo completo `.db`**. No se admiten JSONs.
-
-## Llevar la BBDD del móvil a la raíz del proyecto
-
-Objetivo: tener el archivo como `aris.db` en la raíz del repo para analizarlo.
-
-1. Desde la app, **exporta el backup por SFTP** (genera un `.db`).
-2. Descarga ese `.db` al PC.
-3. Copia el archivo a la raíz del proyecto y renómbralo a `aris.db`.
-
-Ejemplo (PowerShell):
-```powershell
-Copy-Item -Force "C:\ruta\del\backup\aris_backup_YYYYMMDDHHMM.db" "e:\laragon\www\formarse\aris.db"
-```
 
 ## Cuota (estimada)
 
