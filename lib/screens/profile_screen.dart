@@ -3,6 +3,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 
 import '../storage/ai_settings_store.dart';
 import '../storage/subscription_lists_store.dart';
+import '../ui/list_hierarchy.dart';
 import '../ui/list_icons.dart';
 import '../services/ai_summary_service.dart';
 import '../services/ai_cost_tracker.dart';
@@ -13,10 +14,12 @@ class _ListFormResult {
   const _ListFormResult({
     required this.name,
     required this.iconKey,
+    required this.parentId,
   });
 
   final String name;
   final String iconKey;
+  final String parentId;
 }
 
 class _ModelOption {
@@ -846,6 +849,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
     widget.onListsChanged?.call();
   }
 
+  Set<String> _collectDescendantIds(String rootId) {
+    final childrenByParent = <String, List<String>>{};
+    for (final list in _lists) {
+      final parentId = list.parentId.trim();
+      if (parentId.isEmpty) continue;
+      childrenByParent.putIfAbsent(parentId, () => []).add(list.id);
+    }
+    final visited = <String>{};
+    final descendants = <String>{};
+    final stack = <String>[rootId];
+    while (stack.isNotEmpty) {
+      final current = stack.removeLast();
+      if (!visited.add(current)) continue;
+      final children = childrenByParent[current];
+      if (children == null) continue;
+      for (final child in children) {
+        if (descendants.add(child)) {
+          stack.add(child);
+        }
+      }
+    }
+    return descendants;
+  }
+
   void _reorderLists(int oldIndex, int newIndex) {
     if (newIndex > oldIndex) {
       newIndex -= 1;
@@ -866,6 +893,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       name: result.name,
       iconKey: result.iconKey,
+      parentId: result.parentId,
     );
     setState(() {
       _lists = [..._lists, list];
@@ -877,6 +905,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final result = await _promptListForm(
       initialName: list.name,
       initialIconKey: list.iconKey,
+      initialParentId: list.parentId,
+      currentListId: list.id,
     );
     if (result == null) return;
     setState(() {
@@ -886,6 +916,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ? item.copyWith(
                     name: result.name,
                     iconKey: result.iconKey,
+                    parentId: result.parentId,
                   )
                 : item,
           )
@@ -898,7 +929,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final confirm = await _confirmDelete(list.name);
     if (!confirm) return;
     setState(() {
-      _lists = _lists.where((item) => item.id != list.id).toList();
+      _lists = _lists
+          .map(
+            (item) => item.parentId == list.id
+                ? item.copyWith(parentId: '')
+                : item,
+          )
+          .where((item) => item.id != list.id)
+          .toList();
       _assignments.remove(list.id);
     });
     await _saveLists();
@@ -907,9 +945,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<_ListFormResult?> _promptListForm({
     String? initialName,
     String? initialIconKey,
+    String? initialParentId,
+    String? currentListId,
   }) {
     final controller = TextEditingController(text: initialName ?? '');
     var selectedIconKey = initialIconKey ?? listIconOptions.first.key;
+    final listById = {
+      for (final list in _lists) list.id: list,
+    };
+    final excluded = <String>{};
+    if (currentListId != null && currentListId.isNotEmpty) {
+      excluded.add(currentListId);
+      excluded.addAll(_collectDescendantIds(currentListId));
+    }
+    final parentCandidates = _lists
+        .where((list) => !excluded.contains(list.id))
+        .toList()
+      ..sort(
+        (a, b) => listDisplayName(a, listById)
+            .compareTo(listDisplayName(b, listById)),
+      );
+    var selectedParentId = initialParentId ?? '';
+    if (selectedParentId.isNotEmpty &&
+        !parentCandidates.any((list) => list.id == selectedParentId)) {
+      selectedParentId = '';
+    }
     return showDialog<_ListFormResult>(
       context: context,
       builder: (context) {
@@ -956,6 +1016,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       border: OutlineInputBorder(),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: selectedParentId,
+                    items: [
+                      const DropdownMenuItem(
+                        value: '',
+                        child: Text('Sin padre'),
+                      ),
+                      for (final list in parentCandidates)
+                        DropdownMenuItem(
+                          value: list.id,
+                          child: Text(listDisplayName(list, listById)),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() {
+                        selectedParentId = value;
+                      });
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'Etiqueta padre',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
                 ],
               ),
               actions: [
@@ -971,6 +1056,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       _ListFormResult(
                         name: name,
                         iconKey: selectedIconKey,
+                        parentId: selectedParentId.trim(),
                       ),
                     );
                   },
@@ -1326,6 +1412,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildListsSection(BuildContext context) {
+    final listById = {
+      for (final list in _lists) list.id: list,
+    };
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       child: Column(
@@ -1359,6 +1448,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               onReorder: _reorderLists,
               itemBuilder: (context, index) {
                 final list = _lists[index];
+                final displayName = listDisplayName(list, listById);
                 return ListTile(
                   key: ValueKey(list.id),
                   minLeadingWidth: 72,
@@ -1373,7 +1463,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       Icon(iconForListKey(list.iconKey)),
                     ],
                   ),
-                  title: Text(list.name),
+                  title: Text(displayName),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [

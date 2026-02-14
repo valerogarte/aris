@@ -1,1 +1,10 @@
-Cuando esté resumido, debe hacer un Text To Spech para leer el resumen.
+Tareas:
+
+- Al tocar una etiqueta en Explorar navegue a una vista con sus canales
+
+Revisar:
+
+- Revisa que en lib/screens/videos_screen.dart no se hagan peticiones de información que ya exista en la bbdd, por ejemplo la de canales.
+- Historial metido tras ver o generar resumen del vídeo
+- Listas jerarquicas
+- Nuevo menú principal con etiquetas

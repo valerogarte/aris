@@ -8,6 +8,7 @@ import '../services/quota_tracker.dart';
 import '../storage/subscription_lists_store.dart';
 import '../storage/expiring_cache_store.dart';
 import '../storage/ai_settings_store.dart';
+import '../ui/list_hierarchy.dart';
 import '../ui/list_icons.dart';
 import '../services/ai_cost_tracker.dart';
 import '../ui/channel_avatar.dart';
@@ -413,6 +414,10 @@ class _VideosScreenState extends State<VideosScreen> {
       );
     }
 
+    final listById = {
+      for (final list in _lists) list.id: list,
+    };
+
     return RefreshIndicator(
       onRefresh: () => _loadVideos(userInitiated: true),
       child: ListView.separated(
@@ -429,6 +434,7 @@ class _VideosScreenState extends State<VideosScreen> {
               onSelectList: _handleListTap,
               scrollController: _listsScrollController,
               chipKeys: _listChipKeys,
+              listById: listById,
             );
           }
           final video = _videos[index - 1];
@@ -670,6 +676,7 @@ class _ListsChipsRow extends StatelessWidget {
     required this.onSelectList,
     required this.scrollController,
     required this.chipKeys,
+    required this.listById,
   });
 
   final List<SubscriptionList> lists;
@@ -678,6 +685,7 @@ class _ListsChipsRow extends StatelessWidget {
   final ValueChanged<String> onSelectList;
   final ScrollController scrollController;
   final Map<String, GlobalKey> chipKeys;
+  final Map<String, SubscriptionList> listById;
 
   @override
   Widget build(BuildContext context) {
@@ -709,7 +717,7 @@ class _ListsChipsRow extends StatelessWidget {
               size: 18,
               color: labelColor,
             ),
-            label: Text(list.name),
+            label: Text(listDisplayName(list, listById)),
             selected: selected,
             showCheckmark: false,
             onSelected: (_) => onSelectList(list.id),

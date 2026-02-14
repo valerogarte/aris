@@ -17,15 +17,15 @@ Pasos (PowerShell):
 adb devices
 adb shell am force-stop com.aris
 adb shell run-as com.aris cp /data/data/com.aris/databases/aris.db /sdcard/aris.db
-adb pull /sdcard/aris.db e:\laragon\www\formarse\aris.db
+adb pull /sdcard/aris.db e:\laragon\www\aris\aris.db
 ```
 
 Si quieres llevar también los WAL/SHM:
 ```powershell
 adb shell run-as com.aris cp /data/data/com.aris/databases/aris.db-wal /sdcard/aris.db-wal
 adb shell run-as com.aris cp /data/data/com.aris/databases/aris.db-shm /sdcard/aris.db-shm
-adb pull /sdcard/aris.db-wal e:\laragon\www\formarse\aris.db-wal
-adb pull /sdcard/aris.db-shm e:\laragon\www\formarse\aris.db-shm
+adb pull /sdcard/aris.db-wal e:\laragon\www\aris\aris.db-wal
+adb pull /sdcard/aris.db-shm e:\laragon\www\aris\aris.db-shm
 ```
 
 Nota:
@@ -56,6 +56,7 @@ Campos:
 - `micro_cost` (INTEGER, **NOT NULL**)
 
 Clave primaria compuesta: `(date, label)`.
+Índice: `idx_ai_cost_breakdown_date` en `date`.
 
 ### `youtube_quota_daily`
 Consumo de cuota diaria de YouTube.
@@ -73,6 +74,7 @@ Campos:
 - `units` (INTEGER, **NOT NULL**)
 
 Clave primaria compuesta: `(date, label)`.
+Índice: `idx_quota_breakdown_date` en `date`.
 
 ### `channels`
 Información completa de canales suscritos.
@@ -107,6 +109,8 @@ Campos:
 - `summary_requested_at` (INTEGER, epoch ms)
 - `last_activity_at` (INTEGER, **NOT NULL**, epoch ms)
 
+Índice: `idx_history_activity` en `last_activity_at`.
+
 ## Convenciones de almacenamiento en `kv`
 
 El campo `value` siempre es un **String**. Cuando el dato es estructurado, se guarda como **JSON serializado**.
@@ -128,13 +132,20 @@ El campo `value` siempre es un **String**. Cuando el dato es estructurado, se gu
 ```json
 {
   "lists": [
-    { "id": "listId", "name": "Nombre", "iconKey": "label" }
+    {
+      "id": "listId",
+      "name": "Nombre",
+      "iconKey": "label",
+      "parentId": ""
+    }
   ],
   "assignments": {
     "listId": ["channelId1", "channelId2"]
   }
 }
 ```
+Notas:
+- `parentId` guarda el id de la etiqueta padre o `""` si no tiene.
 
 **`sftp_settings`**
 ```json

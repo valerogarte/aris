@@ -7,17 +7,24 @@ class SubscriptionList {
     required this.id,
     required this.name,
     required this.iconKey,
+    this.parentId = '',
   });
 
   final String id;
   final String name;
   final String iconKey;
+  final String parentId;
 
-  SubscriptionList copyWith({String? name, String? iconKey}) {
+  SubscriptionList copyWith({
+    String? name,
+    String? iconKey,
+    String? parentId,
+  }) {
     return SubscriptionList(
       id: id,
       name: name ?? this.name,
       iconKey: iconKey ?? this.iconKey,
+      parentId: parentId ?? this.parentId,
     );
   }
 
@@ -25,6 +32,7 @@ class SubscriptionList {
         'id': id,
         'name': name,
         'iconKey': iconKey,
+        'parentId': parentId,
       };
 
   factory SubscriptionList.fromJson(Map<String, dynamic> json) {
@@ -32,6 +40,7 @@ class SubscriptionList {
       id: (json['id'] as String?) ?? '',
       name: (json['name'] as String?) ?? '',
       iconKey: (json['iconKey'] as String?) ?? 'label',
+      parentId: (json['parentId'] as String?) ?? '',
     );
   }
 }

@@ -6,6 +6,7 @@ import 'screens/history_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/lists_screen.dart';
 import 'screens/profile_screen.dart';
+import 'screens/explore_screen.dart';
 import 'screens/videos_screen.dart';
 import 'services/ai_cost_tracker.dart';
 import 'services/quota_tracker.dart';
@@ -183,6 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final QuotaTracker _quotaTracker;
   late final AiCostTracker _aiCostTracker;
   final ValueNotifier<int> _listsVersion = ValueNotifier<int>(0);
+  final ValueNotifier<int> _tabIndexNotifier = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -200,6 +202,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _quotaTracker.dispose();
     _aiCostTracker.dispose();
     _listsVersion.dispose();
+    _tabIndexNotifier.dispose();
     super.dispose();
   }
 
@@ -218,12 +221,21 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       (
+        title: 'Explorar',
+        icon: Icons.explore,
+        body: ExploreScreen(
+          listsVersion: _listsVersion,
+        ),
+      ),
+      (
         title: 'Historial',
         icon: Icons.history,
         body: HistoryScreen(
           accessToken: widget.accessToken,
           quotaTracker: _quotaTracker,
           aiCostTracker: _aiCostTracker,
+          tabIndexListenable: _tabIndexNotifier,
+          tabIndex: 2,
         ),
       ),
       (
@@ -281,6 +293,7 @@ class _HomeScreenState extends State<HomeScreen> {
         onDestinationSelected: (index) {
           setState(() {
             _currentIndex = index;
+            _tabIndexNotifier.value = index;
           });
         },
         destinations: [

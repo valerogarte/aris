@@ -748,33 +748,30 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
       _activeTab = _SummaryTab.summary;
     });
     _log('summary: generate requested');
-    try {
-      final summary = await _ensureSummaryCached(
-        preferredTrack: _selectedTrack,
-        transcript: _transcript,
-      );
-      if (mounted) {
-        setState(() {
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
-        if (summary != null && summary.isNotEmpty) {
-          _applySummary(summary);
-        } else {
-          _summaryError = 'No se pudo generar el resumen.';
-        }
+    _ensureSummaryCached(
+      preferredTrack: _selectedTrack,
+      transcript: _transcript,
+    ).then((summary) {
+      if (!mounted) return;
+      setState(() {
+        _loadingSummary = false;
+        _summaryRequested = false;
+      });
+      if (summary != null && summary.isNotEmpty) {
+        _applySummary(summary);
+      } else {
+        _summaryError = 'No se pudo generar el resumen.';
       }
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _summaryError =
-              'No se pudo generar el resumen.\n${_formatSummaryError(error)}';
-          _loadingSummary = false;
-          _summaryRequested = false;
-        });
-      }
+    }).catchError((error) {
       _log('summary: error $error');
-    }
+      if (!mounted) return;
+      setState(() {
+        _summaryError =
+            'No se pudo generar el resumen.\n${_formatSummaryError(error)}';
+        _loadingSummary = false;
+        _summaryRequested = false;
+      });
+    });
   }
 
   void _applySummary(String? raw) {
@@ -1384,8 +1381,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                     return ToggleButtons(
                       isSelected: [_activeTab == _SummaryTab.summary, _activeTab == _SummaryTab.transcript],
                       onPressed: (index) {
+                        final nextTab = index == 0 ? _SummaryTab.summary : _SummaryTab.transcript;
+                        if (nextTab == _activeTab) return;
                         setState(() {
-                          _activeTab = index == 0 ? _SummaryTab.summary : _SummaryTab.transcript;
+                          _activeTab = nextTab;
                         });
                       },
                       borderRadius: BorderRadius.circular(10),

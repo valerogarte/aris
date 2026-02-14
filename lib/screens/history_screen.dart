@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/history_video.dart';
 import '../models/youtube_video.dart';
@@ -53,11 +54,15 @@ class HistoryScreen extends StatefulWidget {
     required this.accessToken,
     this.quotaTracker,
     this.aiCostTracker,
+    this.tabIndexListenable,
+    this.tabIndex = 0,
   });
 
   final String accessToken;
   final QuotaTracker? quotaTracker;
   final AiCostTracker? aiCostTracker;
+  final ValueListenable<int>? tabIndexListenable;
+  final int tabIndex;
 
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
@@ -71,11 +76,23 @@ class _HistoryScreenState extends State<HistoryScreen> {
   List<HistoryVideo> _items = const [];
   Map<String, String> _channelAvatars = {};
   bool _loading = true;
+  VoidCallback? _tabListener;
 
   @override
   void initState() {
     super.initState();
     _loadHistory();
+    _attachTabListener();
+  }
+
+  @override
+  void didUpdateWidget(covariant HistoryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tabIndexListenable != widget.tabIndexListenable ||
+        oldWidget.tabIndex != widget.tabIndex) {
+      _detachTabListener(oldWidget.tabIndexListenable);
+      _attachTabListener();
+    }
   }
 
   Future<void> _loadHistory() async {
@@ -90,6 +107,30 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _channelAvatars = avatarMap;
       _loading = false;
     });
+  }
+
+  void _attachTabListener() {
+    final listenable = widget.tabIndexListenable;
+    if (listenable == null) return;
+    _tabListener = () {
+      if (!mounted) return;
+      if (listenable.value == widget.tabIndex) {
+        _loadHistory();
+      }
+    };
+    listenable.addListener(_tabListener!);
+  }
+
+  void _detachTabListener(ValueListenable<int>? listenable) {
+    if (listenable == null || _tabListener == null) return;
+    listenable.removeListener(_tabListener!);
+    _tabListener = null;
+  }
+
+  @override
+  void dispose() {
+    _detachTabListener(widget.tabIndexListenable);
+    super.dispose();
   }
 
   Future<Map<String, String>> _loadChannelAvatars(

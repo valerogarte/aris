@@ -4,6 +4,7 @@ import '../models/youtube_subscription.dart';
 import '../services/youtube_api_service.dart';
 import '../services/quota_tracker.dart';
 import '../storage/subscription_lists_store.dart';
+import '../ui/list_hierarchy.dart';
 import '../ui/list_icons.dart';
 import 'channel_videos_screen.dart';
 
@@ -216,6 +217,9 @@ class _ListsScreenState extends State<ListsScreen> {
 
   void _openAssignLists(YouTubeSubscription subscription) {
     final selected = _listsForChannel(subscription.channelId);
+    final listById = {
+      for (final list in _lists) list.id: list,
+    };
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -248,7 +252,7 @@ class _ListsScreenState extends State<ListsScreen> {
                             final list = _lists[index];
                             return CheckboxListTile(
                               value: selected.contains(list.id),
-                              title: Text(list.name),
+                              title: Text(listDisplayName(list, listById)),
                               secondary: Icon(iconForListKey(list.iconKey)),
                               onChanged: (value) {
                                 final checked = value ?? false;
@@ -337,6 +341,10 @@ class _ListsScreenState extends State<ListsScreen> {
       );
     }
 
+    final listById = {
+      for (final list in _lists) list.id: list,
+    };
+
     final assignedChannels = <String>{};
     final listCounts = <String, int>{};
     for (final entry in _assignments.entries) {
@@ -422,6 +430,7 @@ class _ListsScreenState extends State<ListsScreen> {
                   totalCount: _subscriptions.length,
                   unassignedCount: unassignedCount,
                   showUnassigned: unassignedCount > 0,
+                  listById: listById,
                 ),
                 const SizedBox(height: 8),
                 Padding(
@@ -497,7 +506,7 @@ class _ListsScreenState extends State<ListsScreen> {
                             iconForListKey(list.iconKey),
                             size: 16,
                           ),
-                          label: Text(list.name),
+                          label: Text(listDisplayName(list, listById)),
                           visualDensity: VisualDensity.compact,
                         ),
                     ],
@@ -554,6 +563,7 @@ class _ListsChipsRow extends StatelessWidget {
     required this.totalCount,
     required this.unassignedCount,
     required this.showUnassigned,
+    required this.listById,
   });
 
   final List<SubscriptionList> lists;
@@ -566,6 +576,7 @@ class _ListsChipsRow extends StatelessWidget {
   final int totalCount;
   final int unassignedCount;
   final bool showUnassigned;
+  final Map<String, SubscriptionList> listById;
 
   @override
   Widget build(BuildContext context) {
@@ -640,7 +651,7 @@ class _ListsChipsRow extends StatelessWidget {
                   ? Colors.white70
                   : Colors.white38;
           final count = listCounts[list.id] ?? 0;
-          final label = '${list.name} ($count)';
+          final label = '${listDisplayName(list, listById)} ($count)';
           return ChoiceChip(
             avatar: Icon(
               iconForListKey(list.iconKey),
