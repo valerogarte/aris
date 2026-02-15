@@ -1,12 +1,11 @@
 Tareas:
 
-- Al tocar una etiqueta en Explorar navegue a una vista con sus canales
+- Al tocar una etiqueta en Explorar navegue a la vista de Suscripción con su lista seleccionada
 
-- En el detalle del vídeo, la info que se muestra debajo del vídeo debe ser exactamente la misma que se muestra en "Suscripciones" el mismo diseño.
-- Cuando la reproducción del vídeo en el detalle del vídeo, se debe eliminar el timpo que se está mostrando dentro del reproductor.
+- Cuando un vídeo se cargue dicho vídeo debe guardarse en la bbdd y de esa manera no se debe llamar más para obtener datos de ese vídeo.
+
+- La página de Historial no debe realizar ninguna llamada, todo debe ser llamada a bbdd.
 
 Revisar:
 
-- Revisa que en lib/screens/videos_screen.dart no se hagan peticiones de información que ya exista en la bbdd, por ejemplo la de canales.
-- Listas jerarquicas
-- Nuevo menú principal con etiquetas
+- 

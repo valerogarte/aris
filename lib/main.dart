@@ -247,6 +247,9 @@ class _HomeScreenState extends State<HomeScreen> {
           quotaTracker: _quotaTracker,
           onRefreshToken: widget.onRefreshToken,
           listsVersion: _listsVersion,
+          onListsChanged: () {
+            _listsVersion.value += 1;
+          },
         ),
       ),
     ];

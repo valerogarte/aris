@@ -198,6 +198,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _exportingBackup = false;
   bool _testingSftp = false;
   bool _loadingLists = true;
+  StateSetter? _listsSectionSetState;
   List<SubscriptionList> _lists = const [];
   Map<String, Set<String>> _assignments = {};
   String? _draggingListId;
@@ -855,6 +856,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _saveLists() async {
     await _listsStore.save(_lists, _assignments);
     widget.onListsChanged?.call();
+    _listsSectionSetState?.call(() {});
   }
 
   Set<String> _collectDescendantIds(String rootId) {
@@ -1031,31 +1033,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    value: selectedIconKey,
-                    items: listIconOptions
-                        .map(
-                          (option) => DropdownMenuItem(
-                            value: option.key,
-                            child: Row(
-                              children: [
-                                Icon(option.icon),
-                                const SizedBox(width: 8),
-                                Text(option.label),
-                              ],
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (value) {
-                      if (value == null) return;
-                      setState(() {
-                        selectedIconKey = value;
-                      });
-                    },
+                  InputDecorator(
                     decoration: const InputDecoration(
                       labelText: 'Icono',
                       border: OutlineInputBorder(),
+                    ),
+                    child: InkWell(
+                      onTap: () async {
+                        final picked =
+                            await _pickListIcon(selectedIconKey);
+                        if (picked == null) return;
+                        setState(() {
+                          selectedIconKey = picked;
+                        });
+                      },
+                      child: Row(
+                        children: [
+                          Icon(iconForListKey(selectedIconKey)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(labelForListKey(selectedIconKey)),
+                          ),
+                          const Icon(Icons.keyboard_arrow_down),
+                        ],
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -1107,6 +1108,176 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ],
             );
           },
+        );
+      },
+    );
+  }
+
+  Future<String?> _pickListIcon(String selectedKey) {
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) {
+        final searchController = TextEditingController();
+        return DefaultTabController(
+          length: listIconCategories.length,
+          child: StatefulBuilder(
+            builder: (context, setModalState) {
+              final query = searchController.text.trim().toLowerCase();
+              final filtered = query.isEmpty
+                  ? const <ListIconOption>[]
+                  : listIconOptions
+                      .where(
+                        (option) =>
+                            option.label.toLowerCase().contains(query),
+                      )
+                      .toList();
+              final height = MediaQuery.of(context).size.height * 0.85;
+              return SizedBox(
+                height: height,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                      child: TextField(
+                        controller: searchController,
+                        onChanged: (_) => setModalState(() {}),
+                        decoration: InputDecoration(
+                          hintText: 'Buscar iconos',
+                          prefixIcon: const Icon(Icons.search),
+                          filled: true,
+                          fillColor: const Color(0xFF1A1A1A),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          suffixIcon: query.isEmpty
+                              ? null
+                              : IconButton(
+                                  onPressed: () {
+                                    searchController.clear();
+                                    setModalState(() {});
+                                  },
+                                  icon: const Icon(Icons.close),
+                                ),
+                        ),
+                      ),
+                    ),
+                    if (query.isEmpty)
+                      TabBar(
+                        isScrollable: true,
+                        tabs: [
+                          for (final category in listIconCategories)
+                            Tab(
+                              icon: Icon(category.icon),
+                              text: category.label,
+                            ),
+                        ],
+                      ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: query.isEmpty
+                          ? TabBarView(
+                              children: [
+                                for (final category in listIconCategories)
+                                  _buildIconGrid(
+                                    options: category.options,
+                                    selectedKey: selectedKey,
+                                    onSelect: (key) =>
+                                        Navigator.of(context).pop(key),
+                                  ),
+                              ],
+                            )
+                          : _buildIconGrid(
+                              options: filtered,
+                              selectedKey: selectedKey,
+                              emptyMessage:
+                                  'No hay iconos que coincidan.',
+                              onSelect: (key) =>
+                                  Navigator.of(context).pop(key),
+                            ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildIconGrid({
+    required List<ListIconOption> options,
+    required String selectedKey,
+    required ValueChanged<String> onSelect,
+    String emptyMessage = 'No hay iconos disponibles.',
+  }) {
+    if (options.isEmpty) {
+      return Center(
+        child: Text(
+          emptyMessage,
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      );
+    }
+
+    final width = MediaQuery.of(context).size.width;
+    final crossAxisCount = width >= 900
+        ? 7
+        : width >= 700
+            ? 6
+            : width >= 520
+                ? 5
+                : 4;
+    final primary = Theme.of(context).colorScheme.primary;
+    return GridView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: crossAxisCount,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 0.9,
+      ),
+      itemCount: options.length,
+      itemBuilder: (context, index) {
+        final option = options[index];
+        final selected = option.key == selectedKey;
+        return InkWell(
+          onTap: () => onSelect(option.key),
+          borderRadius: BorderRadius.circular(12),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color:
+                  selected ? primary.withOpacity(0.12) : const Color(0xFF1A1A1A),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: selected ? primary : const Color(0xFF2A2A2A),
+              ),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  option.icon,
+                  color: selected ? primary : Colors.white70,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  option.label,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: selected ? primary : Colors.white70,
+                      ),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
@@ -1551,7 +1722,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              LongPressDraggable<_ListDragData>(
+                              Draggable<_ListDragData>(
                                 data: _ListDragData(list.id),
                                 feedback: Material(
                                   color: Colors.transparent,
@@ -1586,7 +1757,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   ),
                                 ),
                                 childWhenDragging: Icon(
-                                  Icons.account_tree,
+                                  Icons.drag_handle,
                                   color: Theme.of(context)
                                       .colorScheme
                                       .primary,
@@ -1603,10 +1774,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     _dragHoverParentId = null;
                                   });
                                 },
-                                child: IconButton(
-                                  icon: const Icon(Icons.account_tree),
-                                  tooltip: 'Arrastra para asignar padre',
-                                  onPressed: () {},
+                                child: const Tooltip(
+                                  message: 'Arrastra para asignar padre',
+                                  child: Icon(Icons.drag_handle),
                                 ),
                               ),
                               IconButton(
@@ -1637,22 +1807,45 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _openSection({
     required String title,
     required Widget Function(BuildContext) builder,
+    bool trackListsState = false,
   }) {
-    Navigator.of(context).push(
+    Navigator.of(context)
+        .push(
       MaterialPageRoute(
         builder: (context) {
-          return Scaffold(
-            appBar: AppBar(title: Text(title)),
-            body: SafeArea(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.only(bottom: 24),
-                child: builder(context),
+          if (!trackListsState) {
+            return Scaffold(
+              appBar: AppBar(title: Text(title)),
+              body: SafeArea(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  child: builder(context),
+                ),
               ),
-            ),
+            );
+          }
+          return StatefulBuilder(
+            builder: (context, setSectionState) {
+              _listsSectionSetState = setSectionState;
+              return Scaffold(
+                appBar: AppBar(title: Text(title)),
+                body: SafeArea(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(bottom: 24),
+                    child: builder(context),
+                  ),
+                ),
+              );
+            },
           );
         },
       ),
-    );
+    )
+        .then((_) {
+      if (trackListsState) {
+        _listsSectionSetState = null;
+      }
+    });
   }
 
   Widget _buildMenuTile({
@@ -1744,6 +1937,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             onTap: () => _openSection(
               title: 'Listas',
               builder: _buildListsSection,
+              trackListsState: true,
             ),
           ),
         ],

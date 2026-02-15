@@ -10,12 +10,20 @@ import '../ui/list_icons.dart';
 import 'channel_videos_screen.dart';
 
 class ListsScreen extends StatefulWidget {
-  const ListsScreen({super.key, required this.accessToken, this.quotaTracker, this.onRefreshToken, this.listsVersion});
+  const ListsScreen({
+    super.key,
+    required this.accessToken,
+    this.quotaTracker,
+    this.onRefreshToken,
+    this.listsVersion,
+    this.onListsChanged,
+  });
 
   final String accessToken;
   final QuotaTracker? quotaTracker;
   final Future<String?> Function({bool interactive})? onRefreshToken;
   final ValueListenable<int>? listsVersion;
+  final VoidCallback? onListsChanged;
 
   @override
   State<ListsScreen> createState() => _ListsScreenState();
@@ -112,6 +120,7 @@ class _ListsScreenState extends State<ListsScreen> {
 
   Future<void> _save() async {
     await _store.save(_lists, _assignments);
+    widget.onListsChanged?.call();
   }
 
   bool _hasAssignments(String listId) {
